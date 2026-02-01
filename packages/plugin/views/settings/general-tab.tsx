@@ -6,6 +6,7 @@ import { UsageStats } from "../../components/usage-stats";
 import { TopUpCredits } from "../../views/settings/top-up-credits";
 import { AccountData } from "./account-data";
 import { validateApiKey } from "../../apiUtils";
+import { FREE_TIER_TOKEN_LIMIT } from "../../constants";
 
 interface GeneralTabProps {
   plugin: FileOrganizer;
@@ -57,10 +58,17 @@ export const GeneralTab: React.FC<GeneralTabProps> = ({
 
         // If the token usage meets or exceeds the limit, show a specific notice
         if (data.tokenUsage >= data.maxTokenUsage) {
-          new Notice(
-            "Token limit reached. Please upgrade your plan for more tokens.",
-            5000
-          );
+          if (data.maxTokenUsage === FREE_TIER_TOKEN_LIMIT) {
+            new Notice(
+              "Token limit reached. Please upgrade your plan for more tokens.",
+              5000
+            );
+          } else {
+            new Notice(
+              "Token limit reached for this month. Tokens reset on the 1st. Top up credits if you need more before then.",
+              5000
+            );
+          }
         }
       }
     } catch (error) {
@@ -335,13 +343,24 @@ export const GeneralTab: React.FC<GeneralTabProps> = ({
               )}
             {usageData && usageData.tokenUsage >= usageData.maxTokenUsage && (
               <div className="mt-2 p-3 bg-[--background-] bg-opacity-20 rounded text-[--text-error] text-sm">
-                <strong>Token limit reached!</strong> You've used all your
-                tokens for this month. Next reset is on the 1st of the coming
-                month.
-                <br />
-                <br />
-                Upgrade your plan if you'd like to to continue using Note
-                Companion.
+                {usageData.maxTokenUsage === FREE_TIER_TOKEN_LIMIT ? (
+                  <>
+                    <strong>Token limit reached!</strong> You've used all your
+                    tokens for this month. Next reset is on the 1st of the
+                    coming month.
+                    <br />
+                    <br />
+                    Upgrade your plan if you'd like to to continue using Note
+                    Companion.
+                  </>
+                ) : (
+                  <>
+                    <strong>Token limit reached!</strong> You've used all your
+                    tokens for this month. Next reset is on the 1st of the
+                    coming month. Top up credits if you'd like to continue before
+                    then.
+                  </>
+                )}
               </div>
             )}
           </div>
@@ -355,17 +374,18 @@ export const GeneralTab: React.FC<GeneralTabProps> = ({
           </p>
         )}
 
-        {/* Upgrade Plan button - only show for valid keys */}
-        {usageData && (
-          <div className="mt-4">
-            <button
-              onClick={() => plugin.openUpgradePlanModal()}
-              className="w-full bg-[--interactive-accent] text-[--text-on-accent] px-4 py-2 rounded hover:bg-[--interactive-accent-hover] transition-colors"
-            >
-              Upgrade Plan
-            </button>
-          </div>
-        )}
+        {/* Upgrade Plan button - only show for free tier (100K limit); paid tier has no superior plan */}
+        {usageData &&
+          usageData.maxTokenUsage === FREE_TIER_TOKEN_LIMIT && (
+            <div className="mt-4">
+              <button
+                onClick={() => plugin.openUpgradePlanModal()}
+                className="w-full bg-[--interactive-accent] text-[--text-on-accent] px-4 py-2 rounded hover:bg-[--interactive-accent-hover] transition-colors"
+              >
+                Upgrade Plan
+              </button>
+            </div>
+          )}
       </div>
 
       <AccountData

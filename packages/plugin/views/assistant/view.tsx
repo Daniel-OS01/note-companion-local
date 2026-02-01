@@ -16,6 +16,7 @@ import { Sparkles, Inbox, MessageSquare, Cloud, Mic } from "lucide-react";
 import { UpgradeButton } from "../../components/upgrade-button";
 import { UsageData } from "../..";
 import { Inbox as InboxService } from "../../inbox";
+import { FREE_TIER_TOKEN_LIMIT } from "../../constants";
 
 export const ORGANIZER_VIEW_TYPE = "fo2k.assistant.sidebar2";
 
@@ -249,7 +250,7 @@ function AssistantContent({
     const isFreeTier =
       usageData.currentPlan === "Free Plan" ||
       usageData.currentPlan === "Free" ||
-      usageData.maxTokenUsage === 100000;
+      usageData.maxTokenUsage === FREE_TIER_TOKEN_LIMIT;
 
     if (!isFreeTier) return false;
 
@@ -257,16 +258,17 @@ function AssistantContent({
     return usagePercent >= 0.8; // 80% threshold
   };
 
-  // Handle token limit errors from child components
+  // Handle token limit errors from child components; only show Upgrade for free tier (100K)
   const handleTokenLimitError = React.useCallback(
-    (error: string) => {
-      setForceShowUpgrade(true);
-      // Refresh usage data
+    (_error: string) => {
       plugin
         .fetchUsageStats()
         .then(data => {
           if (data) {
             setUsageData(data);
+            if (data.maxTokenUsage === FREE_TIER_TOKEN_LIMIT) {
+              setForceShowUpgrade(true);
+            }
           }
         })
         .catch(console.error);
