@@ -1,5 +1,5 @@
-import { UserUsageTable, db } from "@/drizzle/schema";
-import { eq } from "drizzle-orm";
+import { UserUsageTable, db } from '@/drizzle/schema';
+import { eq } from 'drizzle-orm';
 
 export interface SubscriptionStatus {
   subscriptionStatus: string;
@@ -14,14 +14,16 @@ export interface SubscriptionStatus {
  * @param userId - The user's ID
  * @returns The user's subscription status
  */
-export async function getUserSubscriptionStatus(userId: string): Promise<SubscriptionStatus> {
+export async function getUserSubscriptionStatus(
+  userId: string
+): Promise<SubscriptionStatus> {
   if (!userId) {
     return {
-      subscriptionStatus: "inactive",
-      paymentStatus: "unpaid",
+      subscriptionStatus: 'inactive',
+      paymentStatus: 'unpaid',
       currentProduct: null,
-      billingCycle: "none",
-      active: false
+      billingCycle: 'none',
+      active: false,
     };
   }
 
@@ -37,47 +39,47 @@ export async function getUserSubscriptionStatus(userId: string): Promise<Subscri
     // If no user usage record found, return default values
     if (!userUsage.length) {
       return {
-        subscriptionStatus: "inactive",
-        paymentStatus: "unpaid",
+        subscriptionStatus: 'inactive',
+        paymentStatus: 'unpaid',
         currentProduct: null,
-        billingCycle: "none",
-        active: false
+        billingCycle: 'none',
+        active: false,
       };
     }
 
     // Return the subscription data
-    const { subscriptionStatus, paymentStatus, currentProduct, billingCycle } = userUsage[0];
+    const { subscriptionStatus, paymentStatus, currentProduct, billingCycle } =
+      userUsage[0];
 
     // Determine if the subscription is active
     // Lifetime licenses are always active
     // Invoice-paid webhook sets subscriptionStatus to Stripe invoice.status ("paid"), not "active"
     const subscriptionOk =
-      subscriptionStatus === "active" ||
-      subscriptionStatus === "paid" ||
-      subscriptionStatus === "succeeded" ||
-      subscriptionStatus === "trialing";
+      subscriptionStatus === 'active' ||
+      subscriptionStatus === 'paid' ||
+      subscriptionStatus === 'succeeded' ||
+      subscriptionStatus === 'trialing';
     const paymentOk =
-      paymentStatus === "paid" ||
-      paymentStatus === "succeeded" ||
-      paymentStatus === "free";
-    const active =
-      billingCycle === "lifetime" || (subscriptionOk && paymentOk);
+      paymentStatus === 'paid' ||
+      paymentStatus === 'succeeded' ||
+      paymentStatus === 'free';
+    const active = billingCycle === 'lifetime' || (subscriptionOk && paymentOk);
 
     return {
       subscriptionStatus,
       paymentStatus,
       currentProduct: currentProduct || null,
       billingCycle,
-      active
+      active,
     };
   } catch (error) {
-    console.error("Error fetching subscription status:", error);
+    console.error('Error fetching subscription status:', error);
     return {
-      subscriptionStatus: "inactive",
-      paymentStatus: "error",
+      subscriptionStatus: 'inactive',
+      paymentStatus: 'error',
       currentProduct: null,
-      billingCycle: "none",
-      active: false
+      billingCycle: 'none',
+      active: false,
     };
   }
 }

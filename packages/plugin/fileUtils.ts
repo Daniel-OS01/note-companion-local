@@ -198,7 +198,7 @@ summary: "{{short summary of the video's main theme and key takeaways}}"
 
 - In the main body, provide a comprehensive summary with bullet points covering all major points from the video transcript.
 
-- **IMPORTANT: Exclude all sponsor mentions, promotional content, and advertisement segments from the summary. Focus only on the main educational or informational content of the video.**
+- **CRITICAL - NO SPONSOR CONTENT: Never include sponsor segments, promotional content, or ads in the summary or body. Exclude: "sponsored by", "use code X", "check out our sponsor", "this video is brought to you by", discount/promo codes, product plugs, and mid-roll ad segments. Summarize ONLY the main educational or informational content of the video. If the transcript contains sponsor blocks, skip them entirely—do not paraphrase or mention them.**
 
 - Do not use \`\`\` code blocks or markdown code formatting in the summary.
 
