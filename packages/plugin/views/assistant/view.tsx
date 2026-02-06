@@ -79,7 +79,11 @@ function TabContent({
           activeTab === "organizer" ? "block" : "hidden"
         )}
       >
-        <AssistantView plugin={plugin} leaf={leaf} onTokenLimitError={onTokenLimitError} />
+        <AssistantView
+          plugin={plugin}
+          leaf={leaf}
+          onTokenLimitError={onTokenLimitError}
+        />
       </div>
 
       <div
@@ -102,6 +106,7 @@ function TabContent({
           plugin={plugin}
           apiKey={plugin.settings.API_KEY}
           onTokenLimitError={onTokenLimitError}
+          isChatTabActive={activeTab === "chat"}
         />
       </div>
 

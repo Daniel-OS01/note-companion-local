@@ -66,6 +66,7 @@ interface ChatComponentProps {
   chatSessions?: ChatSession[];
   onSelectChat?: (id: string) => void;
   onDeleteChat?: (id: string) => void;
+  isChatTabActive?: boolean;
 }
 
 export const ChatComponent: React.FC<ChatComponentProps> = ({
@@ -77,6 +78,7 @@ export const ChatComponent: React.FC<ChatComponentProps> = ({
   chatSessions = [],
   onSelectChat,
   onDeleteChat,
+  isChatTabActive,
 }) => {
   const plugin = usePlugin();
   const app = plugin.app;
@@ -979,13 +981,13 @@ export const ChatComponent: React.FC<ChatComponentProps> = ({
 
   // Derive isGenerating from status (replacement for deprecated isLoading)
   const isGenerating = status === "streaming" || status === "submitted";
-  
+
   // Check if there are tool invocations (executing or waiting for AI response)
   const hasToolActivity = React.useMemo(() => {
     if (messages.length === 0) return false;
     const lastMessage = messages[messages.length - 1];
     if (lastMessage.role !== "assistant") return false;
-    
+
     // Extract tool invocations from parts (new format) or fallback to deprecated toolInvocations
     interface ToolPart {
       type?: string;
@@ -999,18 +1001,21 @@ export const ChatComponent: React.FC<ChatComponentProps> = ({
       output?: unknown;
       state?: string;
     }
-    
+
     const messageWithParts = lastMessage as Message & {
       parts?: ToolPart[];
       toolInvocations?: ToolInvocation[];
     };
-    
+
     // Extract tool invocations from parts (preferred) or fallback to deprecated property
     let toolInvocations: any[] = [];
-    
+
     if (messageWithParts.parts) {
       toolInvocations = messageWithParts.parts
-        .filter((part: ToolPart) => part.type?.startsWith("tool-") || part.toolInvocation)
+        .filter(
+          (part: ToolPart) =>
+            part.type?.startsWith("tool-") || part.toolInvocation
+        )
         .map((part: ToolPart) => {
           if (part.toolInvocation) {
             return {
@@ -1027,33 +1032,36 @@ export const ChatComponent: React.FC<ChatComponentProps> = ({
         })
         .filter((tool: any) => tool.toolCallId); // Filter out invalid entries
     }
-    
+
     // Fallback to deprecated toolInvocations if parts extraction yielded nothing
     if (toolInvocations.length === 0 && messageWithParts.toolInvocations) {
       toolInvocations = messageWithParts.toolInvocations as any[];
     }
-    
+
     if (toolInvocations.length === 0) return false;
-    
+
     // Check if any tools are still executing (no result yet)
     const hasExecutingTools = toolInvocations.some(
       (tool: any) => !("result" in tool) && tool.state !== "result"
     );
-    
+
     // Check if all tools are complete but AI hasn't started streaming yet
     const allToolsComplete = toolInvocations.every(
       (tool: any) => "result" in tool || tool.state === "result"
     );
-    const waitingForAI = allToolsComplete && (!lastMessage.content || lastMessage.content.length === 0);
-    
+    const waitingForAI =
+      allToolsComplete &&
+      (!lastMessage.content || lastMessage.content.length === 0);
+
     return hasExecutingTools || waitingForAI;
   }, [messages]);
-  
+
   // Show loading indicator when:
   // 1. Status is "submitted" (initial request)
   // 2. Tools are executing (before results appear)
   // 3. Tools are complete but AI hasn't started streaming yet
-  const showLoadingIndicator = status === "submitted" || (hasToolActivity && status !== "streaming");
+  const showLoadingIndicator =
+    status === "submitted" || (hasToolActivity && status !== "streaming");
 
   // Helper to normalize message with timestamp
   const normalizeMessage = (
@@ -1477,6 +1485,7 @@ export const ChatComponent: React.FC<ChatComponentProps> = ({
   };
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const prevChatTabActiveRef = useRef<boolean | undefined>(undefined);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -1485,6 +1494,16 @@ export const ChatComponent: React.FC<ChatComponentProps> = ({
   useEffect(() => {
     scrollToBottom();
   }, [messages, history]);
+
+  useEffect(() => {
+    const wasActive = prevChatTabActiveRef.current;
+    prevChatTabActiveRef.current = isChatTabActive;
+    if (isChatTabActive && wasActive === false) {
+      requestAnimationFrame(() => {
+        scrollToBottom();
+      });
+    }
+  }, [isChatTabActive]);
 
   const [maxContextSize] = useState(80 * 1000); // Keep this one
 
@@ -1869,30 +1888,37 @@ export const ChatComponent: React.FC<ChatComponentProps> = ({
                 parts?: ToolPart[];
                 toolInvocations?: ToolInvocation[];
               };
-              
+
               // First, try to use message.toolInvocations directly (most reliable)
-              let toolInvocations: any[] = (messageWithParts.toolInvocations || []) as any[];
-              
+              let toolInvocations: any[] = (messageWithParts.toolInvocations ||
+                []) as any[];
+
               // If not available, extract from parts
               if (toolInvocations.length === 0 && messageWithParts.parts) {
                 toolInvocations = messageWithParts.parts
                   .filter((part: ToolPart) => {
                     // Match parts that are tool-related
-                    return part.type?.startsWith("tool-") || part.toolInvocation;
+                    return (
+                      part.type?.startsWith("tool-") || part.toolInvocation
+                    );
                   })
                   .map((part: ToolPart) => {
                     // If part has nested toolInvocation, use that
                     if (part.toolInvocation) {
-                      console.log("[Chat] Using nested toolInvocation:", part.toolInvocation);
+                      console.log(
+                        "[Chat] Using nested toolInvocation:",
+                        part.toolInvocation
+                      );
                       return {
                         toolCallId: part.toolInvocation.toolCallId,
                         toolName: part.toolInvocation.toolName,
                         args: part.toolInvocation.args || part.input,
                         result: part.toolInvocation.result || part.output,
-                        state: part.toolInvocation.state || part.state || "call",
+                        state:
+                          part.toolInvocation.state || part.state || "call",
                       };
                     }
-                    
+
                     // Otherwise, extract from part.type
                     const toolName = part.type.replace("tool-", "");
                     console.log("[Chat] Extracting from part.type:", {
@@ -1900,19 +1926,26 @@ export const ChatComponent: React.FC<ChatComponentProps> = ({
                       extractedToolName: toolName,
                       toolCallId: part.toolCallId,
                     });
-                    
+
                     // If type is just "tool-invocation", we can't extract the name - skip it
                     if (toolName === "invocation") {
-                      console.warn("[Chat] Cannot extract tool name from part.type 'tool-invocation', skipping");
+                      console.warn(
+                        "[Chat] Cannot extract tool name from part.type 'tool-invocation', skipping"
+                      );
                       return null;
                     }
-                    
+
                     // Require valid toolCallId so addToolResult can match results on the server
-                    if (!part.toolCallId || String(part.toolCallId).trim() === "") {
-                      console.warn("[Chat] Part missing toolCallId, skipping to avoid broken tool result matching");
+                    if (
+                      !part.toolCallId ||
+                      String(part.toolCallId).trim() === ""
+                    ) {
+                      console.warn(
+                        "[Chat] Part missing toolCallId, skipping to avoid broken tool result matching"
+                      );
                       return null;
                     }
-                    
+
                     return {
                       toolCallId: part.toolCallId,
                       toolName: toolName,
@@ -1926,15 +1959,16 @@ export const ChatComponent: React.FC<ChatComponentProps> = ({
                           : "partial-call",
                     };
                   })
-                  .filter((inv) => inv !== null);
+                  .filter(inv => inv !== null);
               }
-              
+
               // Never pass invocations without a valid toolCallId (server matches results by it)
               toolInvocations = toolInvocations.filter(
                 (inv: { toolCallId?: string }) =>
-                  inv?.toolCallId != null && String(inv.toolCallId).trim() !== ""
+                  inv?.toolCallId != null &&
+                  String(inv.toolCallId).trim() !== ""
               );
-              
+
               console.log("[Chat] Final tool invocations:", toolInvocations);
 
               return (
