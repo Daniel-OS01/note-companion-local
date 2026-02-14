@@ -40,6 +40,7 @@ export interface ScreenpipeResult {
     file_path?: string;
     audio_file_path?: string;
     url?: string; // URL if available (e.g., YouTube video URL, webpage URL)
+    browser_url?: string; // Browser tab URL (reliable for in-browser Meet/Teams etc.)
   };
 }
 

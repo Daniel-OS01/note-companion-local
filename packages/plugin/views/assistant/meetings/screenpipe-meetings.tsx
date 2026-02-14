@@ -41,7 +41,7 @@ export const ScreenpipeMeetings: React.FC<ScreenpipeMeetingsProps> = ({
           return;
         }
 
-        const hours = plugin.settings.screenpipeTimeRange || 2;
+        const hours = plugin.settings.screenpipeTimeRange || 6;
         const end = new Date();
         const start = new Date(end.getTime() - hours * 60 * 60 * 1000);
         const searchResults = await client.search({
@@ -338,7 +338,7 @@ export const ScreenpipeMeetings: React.FC<ScreenpipeMeetingsProps> = ({
       {results.length === 0 ? (
         <p className={tw("text-sm text-[--text-muted]")}>
           No meeting audio in the last{" "}
-          {plugin.settings.screenpipeTimeRange ?? 2} hours.
+          {plugin.settings.screenpipeTimeRange ?? 6} hours.
         </p>
       ) : (
         <div className={tw("space-y-2")}>

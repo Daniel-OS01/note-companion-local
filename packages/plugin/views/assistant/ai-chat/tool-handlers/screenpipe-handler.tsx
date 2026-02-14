@@ -252,7 +252,7 @@ export function ScreenpipeHandler({
 
         // Use user settings as fallbacks when AI doesn't provide values
         const userLimit = currentPlugin.settings.queryScreenpipeLimit || 10;
-        const userTimeRange = currentPlugin.settings.screenpipeTimeRange || 2;
+        const userTimeRange = currentPlugin.settings.screenpipeTimeRange || 6;
 
         // Handle time range: AI sends "" for "recent activity" - we interpret this as "use user setting"
         // If AI provides explicit ISO timestamps, use those; otherwise apply user's time range
