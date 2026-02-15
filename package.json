@@ -18,13 +18,17 @@
     "android": "expo run:android",
     "ios": "expo run:ios"
   },
-  "dependencies": {},
   "pnpm": {
     "patchedDependencies": {
       "xcode@3.0.1": "patches/xcode@3.0.1.patch"
     },
     "overrides": {
       "zod": "^3.25.76"
-    }
+    },
+    "onlyBuiltDependencies": [
+      "@ffprobe-installer/darwin-arm64",
+      "@ffprobe-installer/linux-x64",
+      "ffmpeg-static"
+    ]
   }
 }
