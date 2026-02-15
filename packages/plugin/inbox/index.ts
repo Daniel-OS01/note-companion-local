@@ -236,8 +236,12 @@ export class Inbox {
         }
       },
       onComplete: () => {},
-      onError: (error: Error) => {
+      onError: (error: Error, file: TFile) => {
         logger.error("Queue processing error:", error);
+        new Notice(
+          `Note Companion: Processing failed for ${file.basename}. ${error.message}`,
+          6000
+        );
       },
     });
   }
@@ -425,11 +429,16 @@ async function moveAttachmentFile(
 ): Promise<ProcessingContext> {
   if (VALID_MEDIA_EXTENSIONS.includes(context.inboxFile.extension)) {
     context.attachmentFile = context.inboxFile;
-    await safeMove(
+    const newPath = await safeMove(
       context.plugin.app,
       context.inboxFile,
       context.plugin.settings.attachmentsPath
     );
+    const movedFile = context.plugin.app.vault.getAbstractFileByPath(newPath);
+    if (movedFile instanceof TFile) {
+      context.attachmentFile = movedFile;
+      context.inboxFile = movedFile;
+    }
   }
   return context;
 }
@@ -599,7 +608,7 @@ async function getContentStep(
     context.containerFile
   ) {
     const audioFileName = context.attachmentFile.name;
-    const audioLink = `![[${audioFileName}]]\n\n`;
+    const audioLink = `![[${context.attachmentFile.path}]]\n\n`;
     const transcriptHeader = `## Transcript for ${audioFileName}\n\n`;
     finalContent = audioLink + transcriptHeader + content;
   }

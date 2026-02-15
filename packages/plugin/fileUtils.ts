@@ -620,12 +620,13 @@ export async function safeMove(
   app: App,
   file: TFile,
   destinationPath: string
-): Promise<void> {
+): Promise<string> {
   await ensureFolderExists(app, destinationPath);
 
   const desiredPath = `${destinationPath}/${file.name}`;
   const availablePath = await getAvailablePath(app, desiredPath);
   await app.fileManager.renameFile(file, availablePath);
+  return availablePath;
 }
 /**
  * Sanitizes content to ensure it's valid for Obsidian

@@ -1008,7 +1008,7 @@ export default class FileOrganizer extends Plugin {
   async appendAttachment(markdownFile: TFile, attachmentFile: TFile) {
     await this.app.vault.append(
       markdownFile,
-      `\n\n![[${attachmentFile.name}]]`
+      `\n\n![[${attachmentFile.path}]]`
     );
   }
   async appendToFrontMatter(file: TFile, key: string, value: string) {
@@ -1200,9 +1200,12 @@ export default class FileOrganizer extends Plugin {
   }
 
   async getBacklog() {
+    const pathToWatch = this.settings.pathToWatch;
+    if (!pathToWatch) return [];
     const allFiles = this.app.vault.getFiles();
-    const pendingFiles = allFiles.filter(file =>
-      file.path.includes(this.settings.pathToWatch)
+    const pendingFiles = allFiles.filter(
+      (file) =>
+        file.path === pathToWatch || file.path.startsWith(pathToWatch + "/")
     );
     return pendingFiles;
   }
@@ -1210,6 +1213,11 @@ export default class FileOrganizer extends Plugin {
     const pendingFiles = await this.getBacklog();
     logMessage("Enqueuing files from backlog V3");
     Inbox.getInstance().enqueueFiles(pendingFiles);
+    if (pendingFiles.length > 0) {
+      new Notice(
+        `Note Companion: Processing ${pendingFiles.length} file(s) from inbox`
+      );
+    }
     return;
   }
 
@@ -1597,6 +1605,14 @@ export default class FileOrganizer extends Plugin {
       callback: async () => {
         const view = await this.ensureAssistantView();
         view?.activateTab("inbox");
+      },
+    });
+
+    this.addCommand({
+      id: "process-inbox-now",
+      name: "Process inbox now",
+      callback: async () => {
+        await this.processBacklog();
       },
     });
 
