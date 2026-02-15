@@ -272,7 +272,7 @@ Before outputting code, ask yourself:
 
 ### 2. File Upload Flow (Mobile → Server)
 
-**Context:** Handles files from 0 bytes to 25MB across different platforms.
+**Context:** Handles files from 0 bytes up to guardrail limits (see Audio Transcription). Audio transcription uses server-side chunking for files over 25MB.
 
 #### Architecture Overview
 
@@ -288,15 +288,11 @@ R2 Upload → Backend Notification → Processing → Polling → Display
    - Fastest for small audio/text files
    - Endpoint: `/api/transcribe`
 
-2. **Large Files (4MB - 25MB)**
+2. **Large Files (4MB and above, within guardrails)**
    - Pre-signed URL upload to R2
    - Bypasses Vercel's 4.5MB body limit
    - Client uploads directly to R2
-   - Backend downloads from R2 for processing
-
-3. **Files > 25MB**
-   - Error message (OpenAI Whisper API limit)
-   - Instruct user to compress or split
+   - Backend downloads from R2; for transcription, files over 25MB are chunked server-side (see Audio Transcription)
 
 #### Key Files
 
@@ -350,7 +346,7 @@ R2 Upload → Backend Notification → Processing → Polling → Display
 #### Benefits of Pre-signed URL Approach
 - ✅ No Vercel body size limitations
 - ✅ Reuses R2 infrastructure
-- ✅ Scalable to 25MB
+- ✅ Supports large audio (chunked transcription on server)
 - ✅ Better memory usage (streaming)
 - ✅ Same pattern as mobile file uploads
 
@@ -358,16 +354,30 @@ R2 Upload → Backend Notification → Processing → Polling → Display
 
 ### 3. Audio Transcription
 
-**Implementation:** Dual-tier approach based on file size (see File Upload Flow above).
+**Implementation:** Dual-tier upload (direct vs R2); server-side chunking for files over Whisper’s 25MB per-request limit. No user-facing 25MB error; guardrails cap total file size/duration instead.
+
+**Guardrails (transcribe route and upload-audio-to-r2):**
+- **MAX_UPLOAD_BYTES** = 250MB – reject with a friendly “too long to process in one request” message (do not mention 25MB).
+- **MAX_AUDIO_MINUTES** = 180 – same message if estimated duration exceeds 3 hours.
+- Guardrails are checked immediately after the file is in `/tmp`, before any splitting.
+
+**Chunking (files > 25MB, within guardrails):**
+- `packages/web/lib/audio/split-audio.ts` – `splitAudioFileBySizeHeuristic()` uses ffprobe for duration and ffmpeg to split by time (each chunk under 24MB). Two-stage: stream copy first; if that fails, re-encode once to MP3 then split.
+- Transcribe route runs with `runtime = "nodejs"` (required for FFmpeg, `/tmp`, child_process).
+- Whisper is called per chunk with concurrency 1–2; transcripts are merged in chunk index order. Quota is checked and incremented once (full-file duration).
+
+**FFmpeg / FFprobe paths (local vs Vercel):**
+- **Local:** Set `FFMPEG_PATH` and `FFPROBE_PATH` in `packages/web/.env.local` (e.g. `/opt/homebrew/bin/ffmpeg`, `/opt/homebrew/bin/ffprobe`) to use your system binaries.
+- **Vercel:** Do **not** set `FFMPEG_PATH` or `FFPROBE_PATH` in the project env. The code falls back to the bundled binaries from `ffmpeg-static` and `@ffprobe-installer/ffprobe` (included in the serverless bundle via `outputFileTracingIncludes` in `next.config.js`).
 
 **Plugin-side** (`packages/plugin/index.ts`):
-- `transcribeAudio()` (line ~515) - Routes based on file size
-- `transcribeAudioViaPresignedUrl()` (line ~547) - Large file handler
+- `transcribeAudio()` – Routes by size: &lt; 4MB direct upload, ≥ 4MB via presigned URL to R2.
+- `transcribeAudioViaPresignedUrl()` – Large file handler.
 
 **Server-side:**
 - `packages/web/app/api/(newai)/transcribe/route.ts`
-  - `handlePresignedUrlTranscription()` - Downloads from R2 and transcribes
-- Uses OpenAI Whisper API (25MB limit)
+  - Direct upload and `handlePresignedUrlTranscription()` – guardrails → quota once → single Whisper or chunked flow → merge → increment usage once.
+- Uses OpenAI Whisper API (25MB per request; chunking handles larger files internally).
 
 ---
 
@@ -1232,7 +1242,7 @@ const agent = {
 - Obsidian CSS conflicts
 
 ### Upload Issues (Mobile)
-- File size exceeds 25MB
+- File exceeds guardrails (250MB or 180 min) – user sees “too long to process in one request”
 - Network connectivity
 - Invalid presigned URL
 - R2 upload failure

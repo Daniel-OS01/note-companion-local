@@ -160,12 +160,13 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Check file size (25MB limit for OpenAI Whisper)
-    const fileSizeInMB = audioBuffer.byteLength / (1024 * 1024);
-    if (fileSizeInMB > 25) {
+    // Guardrail: max upload size (aligned with transcribe route; chunking handles large files)
+    const MAX_UPLOAD_BYTES = 250 * 1024 * 1024; // 250MB
+    if (audioBuffer.byteLength > MAX_UPLOAD_BYTES) {
       return NextResponse.json(
         {
-          error: "Audio file is too large. Please use a file smaller than 25MB.",
+          error:
+            "This recording is too long to process in one request. Please split it into parts.",
         },
         { status: 400 }
       );

@@ -9,8 +9,17 @@ import {
   checkAudioTranscriptionQuota,
   incrementAudioTranscriptionUsage,
 } from '@/drizzle/schema';
+import { splitAudioFileBySizeHeuristic } from '@/lib/audio/split-audio';
 
+export const runtime = 'nodejs';
 export const maxDuration = 800; // Maximum allowed for Vercel Pro plan (13.3 minutes) for longer audio/video files
+
+/** Guardrail: max file size (250MB). Do not run chunking above this. */
+const MAX_UPLOAD_BYTES = 250 * 1024 * 1024;
+/** Guardrail: max audio duration in minutes (180 min = 3 hours). */
+const MAX_AUDIO_MINUTES = 180;
+const WHISPER_MAX_MB = 25;
+const WHISPER_CONCURRENCY = 2;
 
 /**
  * Gets the duration of an audio file in minutes
@@ -109,6 +118,37 @@ function formatTranscript(text: string): string {
     .join('\n\n');
 
   return formatted;
+}
+
+/**
+ * Transcribes multiple chunk files with limited concurrency.
+ * Returns transcript texts in chunk index order (not completion order).
+ */
+async function transcribeChunksInOrder(
+  openai: OpenAI,
+  chunkPaths: string[],
+  concurrency: number = WHISPER_CONCURRENCY
+): Promise<string[]> {
+  const results: string[] = new Array(chunkPaths.length);
+  let nextIndex = 0;
+
+  async function worker(): Promise<void> {
+    while (nextIndex < chunkPaths.length) {
+      const i = nextIndex++;
+      const path = chunkPaths[i];
+      const transcription = await openai.audio.transcriptions.create({
+        file: fs.createReadStream(path),
+        model: 'whisper-1',
+      });
+      results[i] = transcription.text ?? '';
+    }
+  }
+
+  const workers = Array.from({ length: Math.min(concurrency, chunkPaths.length) }, () =>
+    worker()
+  );
+  await Promise.all(workers);
+  return results;
 }
 
 export async function POST(request: Request) {
@@ -239,24 +279,23 @@ export async function POST(request: Request) {
       baseURL: process.env.OPENAI_API_BASE || 'https://api.openai.com/v1',
     });
 
-    // Check file size
     const stats = await fsPromises.stat(tempFilePath);
-    const fileSizeInMB = stats.size / (1024 * 1024);
+    const fileBytes = stats.size;
+    const fileSizeInMB = fileBytes / (1024 * 1024);
+    const durationInMinutes = await getAudioDurationInMinutes(tempFilePath);
 
-    if (fileSizeInMB > 25) {
-      // File is too large for OpenAI's Whisper API (25MB limit)
+    // Guardrails: check immediately after file is in /tmp, before any splitting
+    if (fileBytes > MAX_UPLOAD_BYTES || durationInMinutes > MAX_AUDIO_MINUTES) {
       if (tempFilePath) await fsPromises.unlink(tempFilePath);
       return NextResponse.json(
         {
           error:
-            'Audio file is too large. Please use a file smaller than 25MB. Consider compressing or splitting the audio file.',
+            'This recording is too long to process in one request. Please split it into parts.',
         },
         { status: 400 }
       );
     }
 
-    // Calculate audio duration and check quota
-    const durationInMinutes = await getAudioDurationInMinutes(tempFilePath);
     const { remaining: remainingMinutes, usageError } =
       await checkAudioTranscriptionQuota(userId);
 
@@ -273,7 +312,6 @@ export async function POST(request: Request) {
 
     if (remainingMinutes < durationInMinutes) {
       if (tempFilePath) await fsPromises.unlink(tempFilePath);
-      // Get user's current usage for better error message
       const { db, UserUsageTable } = await import('@/drizzle/schema');
       const { eq } = await import('drizzle-orm');
       const userUsage = await db
@@ -294,55 +332,99 @@ export async function POST(request: Request) {
       );
     }
 
-    // Process the audio file
-    console.log(
-      `[Transcribe] Starting transcription for file: ${tempFilePath}, size: ${fileSizeInMB.toFixed(
-        2
-      )}MB, duration: ${durationInMinutes} minutes`
-    );
-    const transcription = await openai.audio.transcriptions.create({
-      file: fs.createReadStream(tempFilePath),
-      model: 'whisper-1',
-    });
+    let chunkPaths: string[] = [];
 
-    // Log transcript length for debugging
-    const transcriptLength = transcription.text.length;
-    console.log(
-      `[Transcribe] Transcription completed. Transcript length: ${transcriptLength} characters`
-    );
-
-    // Format the transcript for better readability
-    const formattedText = formatTranscript(transcription.text);
-
-    // Increment audio transcription usage
     try {
-      await incrementAudioTranscriptionUsage(userId, durationInMinutes);
-      console.log(
-        `[Transcribe] Incremented audio transcription usage: +${durationInMinutes} minutes for user ${userId}`
-      );
-    } catch (usageError) {
-      console.error(
-        '[Transcribe] Failed to increment audio transcription usage:',
-        usageError
-      );
-      // Log but don't fail the request - transcription was successful
+      let formattedText: string;
+      let transcriptLength: number;
+
+      if (fileSizeInMB <= WHISPER_MAX_MB) {
+        console.log(
+          `[Transcribe] Starting transcription for file: ${tempFilePath}, size: ${fileSizeInMB.toFixed(2)}MB, duration: ${durationInMinutes} minutes`
+        );
+        const transcription = await openai.audio.transcriptions.create({
+          file: fs.createReadStream(tempFilePath),
+          model: 'whisper-1',
+        });
+        transcriptLength = transcription.text.length;
+        formattedText = formatTranscript(transcription.text);
+        console.log(
+          `[Transcribe] Transcription completed. Transcript length: ${transcriptLength} characters`
+        );
+      } else {
+        try {
+          const { chunkPaths: paths } = await splitAudioFileBySizeHeuristic(
+            tempFilePath,
+            extension,
+            fileBytes,
+            { outputDir: tmpdir() }
+          );
+          chunkPaths = paths;
+          console.log(
+            `[Transcribe] Chunked into ${chunkPaths.length} segments, transcribing with concurrency ${WHISPER_CONCURRENCY}`
+          );
+          const chunkTexts = await transcribeChunksInOrder(
+            openai,
+            chunkPaths,
+            WHISPER_CONCURRENCY
+          );
+          const mergedText = chunkTexts.join('\n');
+          transcriptLength = mergedText.length;
+          formattedText = formatTranscript(mergedText);
+          console.log(
+            `[Transcribe] Chunked transcription completed. Merged length: ${transcriptLength} characters`
+          );
+        } catch (splitError) {
+          console.error('[Transcribe] Chunking failed:', splitError);
+          return NextResponse.json(
+            {
+              error:
+                "We couldn't process this audio format for long recordings.",
+            },
+            { status: 400 }
+          );
+        }
+      }
+
+      try {
+        await incrementAudioTranscriptionUsage(userId, durationInMinutes);
+        console.log(
+          `[Transcribe] Incremented audio transcription usage: +${durationInMinutes} minutes for user ${userId}`
+        );
+      } catch (usageError) {
+        console.error(
+          '[Transcribe] Failed to increment audio transcription usage:',
+          usageError
+        );
+      }
+
+      return NextResponse.json({
+        text: formattedText,
+        length: transcriptLength,
+      });
+    } finally {
+      if (tempFilePath) {
+        try {
+          await fsPromises.unlink(tempFilePath);
+        } catch {
+          // Ignore cleanup errors
+        }
+      }
+      for (const p of chunkPaths) {
+        try {
+          await fsPromises.unlink(p);
+        } catch {
+          // Ignore cleanup errors
+        }
+      }
     }
-
-    // Clean up temp file
-    if (tempFilePath) await fsPromises.unlink(tempFilePath);
-
-    return NextResponse.json({
-      text: formattedText,
-      length: transcriptLength, // Include length for debugging
-    });
   } catch (error) {
     console.error('Transcription error:', error);
 
-    // Clean up temp file on error
     if (tempFilePath) {
       try {
         await fsPromises.unlink(tempFilePath);
-      } catch (unlinkError) {
+      } catch {
         // Ignore cleanup errors
       }
     }
@@ -365,9 +447,9 @@ async function handlePresignedUrlTranscription(
   userId: string
 ): Promise<NextResponse> {
   let tempFilePath: string | null = null;
+  let chunkPaths: string[] = [];
 
   try {
-    // Download the file from R2
     const fileResponse = await fetch(fileUrl);
     if (!fileResponse.ok) {
       throw new Error(
@@ -378,27 +460,26 @@ async function handlePresignedUrlTranscription(
     const arrayBuffer = await fileResponse.arrayBuffer();
     const buffer = new Uint8Array(arrayBuffer);
 
-    // Save to temp file
     tempFilePath = join(tmpdir(), `r2_audio_${Date.now()}.${extension}`);
     await fsPromises.writeFile(tempFilePath, buffer);
 
-    // Check file size
     const stats = await fsPromises.stat(tempFilePath);
-    const fileSizeInMB = stats.size / (1024 * 1024);
+    const fileBytes = stats.size;
+    const fileSizeInMB = fileBytes / (1024 * 1024);
+    const durationInMinutes = await getAudioDurationInMinutes(tempFilePath);
 
-    if (fileSizeInMB > 25) {
+    // Guardrails: check immediately after file is in /tmp
+    if (fileBytes > MAX_UPLOAD_BYTES || durationInMinutes > MAX_AUDIO_MINUTES) {
       await fsPromises.unlink(tempFilePath);
       return NextResponse.json(
         {
           error:
-            'Audio file is too large. Please use a file smaller than 25MB.',
+            'This recording is too long to process in one request. Please split it into parts.',
         },
         { status: 400 }
       );
     }
 
-    // Calculate audio duration and check quota
-    const durationInMinutes = await getAudioDurationInMinutes(tempFilePath);
     const { remaining: remainingMinutes, usageError } =
       await checkAudioTranscriptionQuota(userId);
 
@@ -415,7 +496,6 @@ async function handlePresignedUrlTranscription(
 
     if (remainingMinutes < durationInMinutes) {
       if (tempFilePath) await fsPromises.unlink(tempFilePath);
-      // Get user's current usage for better error message
       const { db, UserUsageTable } = await import('@/drizzle/schema');
       const { eq } = await import('drizzle-orm');
       const userUsage = await db
@@ -436,59 +516,102 @@ async function handlePresignedUrlTranscription(
       );
     }
 
-    // Transcribe using OpenAI
     const openai = new OpenAI({
       apiKey: process.env.OPENAI_API_KEY,
       baseURL: process.env.OPENAI_API_BASE || 'https://api.openai.com/v1',
     });
 
-    console.log(
-      `[Transcribe R2] Starting transcription for file from R2: ${tempFilePath}, size: ${fileSizeInMB.toFixed(
-        2
-      )}MB, duration: ${durationInMinutes} minutes`
-    );
-    const transcription = await openai.audio.transcriptions.create({
-      file: fs.createReadStream(tempFilePath),
-      model: 'whisper-1',
-    });
-
-    // Log transcript length for debugging
-    const transcriptLength = transcription.text.length;
-    console.log(
-      `[Transcribe R2] Transcription completed. Transcript length: ${transcriptLength} characters`
-    );
-
-    // Format the transcript for better readability
-    const formattedText = formatTranscript(transcription.text);
-
-    // Increment audio transcription usage
     try {
-      await incrementAudioTranscriptionUsage(userId, durationInMinutes);
-      console.log(
-        `[Transcribe R2] Incremented audio transcription usage: +${durationInMinutes} minutes for user ${userId}`
-      );
-    } catch (usageError) {
-      console.error(
-        '[Transcribe R2] Failed to increment audio transcription usage:',
-        usageError
-      );
-      // Log but don't fail the request - transcription was successful
+      let formattedText: string;
+      let transcriptLength: number;
+
+      if (fileSizeInMB <= WHISPER_MAX_MB) {
+        console.log(
+          `[Transcribe R2] Starting transcription: ${tempFilePath}, size: ${fileSizeInMB.toFixed(2)}MB, duration: ${durationInMinutes} minutes`
+        );
+        const transcription = await openai.audio.transcriptions.create({
+          file: fs.createReadStream(tempFilePath),
+          model: 'whisper-1',
+        });
+        transcriptLength = transcription.text.length;
+        formattedText = formatTranscript(transcription.text);
+        console.log(
+          `[Transcribe R2] Transcription completed. Transcript length: ${transcriptLength} characters`
+        );
+      } else {
+        try {
+          const { chunkPaths: paths } = await splitAudioFileBySizeHeuristic(
+            tempFilePath,
+            extension,
+            fileBytes,
+            { outputDir: tmpdir() }
+          );
+          chunkPaths = paths;
+          console.log(
+            `[Transcribe R2] Chunked into ${chunkPaths.length} segments, transcribing with concurrency ${WHISPER_CONCURRENCY}`
+          );
+          const chunkTexts = await transcribeChunksInOrder(
+            openai,
+            chunkPaths,
+            WHISPER_CONCURRENCY
+          );
+          const mergedText = chunkTexts.join('\n');
+          transcriptLength = mergedText.length;
+          formattedText = formatTranscript(mergedText);
+          console.log(
+            `[Transcribe R2] Chunked transcription completed. Merged length: ${transcriptLength} characters`
+          );
+        } catch (splitError) {
+          console.error('[Transcribe R2] Chunking failed:', splitError);
+          return NextResponse.json(
+            {
+              error:
+                "We couldn't process this audio format for long recordings.",
+            },
+            { status: 400 }
+          );
+        }
+      }
+
+      try {
+        await incrementAudioTranscriptionUsage(userId, durationInMinutes);
+        console.log(
+          `[Transcribe R2] Incremented audio transcription usage: +${durationInMinutes} minutes for user ${userId}`
+        );
+      } catch (usageError) {
+        console.error(
+          '[Transcribe R2] Failed to increment audio transcription usage:',
+          usageError
+        );
+      }
+
+      return NextResponse.json({
+        text: formattedText,
+        length: transcriptLength,
+      });
+    } finally {
+      if (tempFilePath) {
+        try {
+          await fsPromises.unlink(tempFilePath);
+        } catch {
+          // Ignore cleanup errors
+        }
+      }
+      for (const p of chunkPaths) {
+        try {
+          await fsPromises.unlink(p);
+        } catch {
+          // Ignore cleanup errors
+        }
+      }
     }
-
-    // Clean up
-    await fsPromises.unlink(tempFilePath);
-
-    return NextResponse.json({
-      text: formattedText,
-      length: transcriptLength, // Include length for debugging
-    });
   } catch (error) {
     console.error('Pre-signed URL transcription error:', error);
 
     if (tempFilePath) {
       try {
         await fsPromises.unlink(tempFilePath);
-      } catch (unlinkError) {
+      } catch {
         // Ignore cleanup errors
       }
     }

@@ -29,15 +29,6 @@ export class TranscribeHandler {
         };
       }
 
-      // Check file size (25MB limit)
-      const fileSizeInMB = file.stat.size / (1024 * 1024);
-      if (fileSizeInMB > 25) {
-        return {
-          success: false,
-          error: `Recording is too large (${fileSizeInMB.toFixed(2)} MB). Maximum is 25MB. Please record a shorter meeting or split into multiple recordings.`,
-        };
-      }
-
       // Check quota before uploading
       const quotaCheck = await this.checkQuota(plugin, file);
       if (!quotaCheck.allowed) {

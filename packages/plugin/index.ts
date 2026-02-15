@@ -835,20 +835,7 @@ export default class FileOrganizer extends Plugin {
     file: TFile
   ): Promise<AsyncIterableIterator<string>> {
     try {
-      // Check file size before reading (faster check using stat)
-      const fileSizeInBytes = file.stat.size;
-      const fileSizeInMB = fileSizeInBytes / (1024 * 1024);
-      const MAX_FILE_SIZE_MB = 25;
-      const MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024;
-
-      if (fileSizeInBytes > MAX_FILE_SIZE_BYTES) {
-        throw new Error(
-          `Audio file is too large (${fileSizeInMB.toFixed(
-            2
-          )}MB). Maximum size is ${MAX_FILE_SIZE_MB}MB. Please compress or split the audio file.`
-        );
-      }
-
+      const fileSizeInMB = file.stat.size / (1024 * 1024);
       const audioBuffer = await this.app.vault.readBinary(file);
       console.log(
         `[Plugin] Transcribing audio file: ${

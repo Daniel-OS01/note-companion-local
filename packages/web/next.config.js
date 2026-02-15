@@ -5,6 +5,13 @@ const nextConfig = {
   output: "standalone",
   // Required for pnpm monorepo: ensures files outside app directory are traced
   outputFileTracingRoot: path.join(__dirname, '../../'),
+  // Include ffmpeg/ffprobe binaries in the transcribe API route bundle (Vercel)
+  outputFileTracingIncludes: {
+    '/api/(newai)/transcribe': [
+      './node_modules/ffmpeg-static/ffmpeg',
+      './node_modules/@ffprobe-installer/ffprobe/**',
+    ],
+  },
   eslint: {
     ignoreDuringBuilds: true,
   },

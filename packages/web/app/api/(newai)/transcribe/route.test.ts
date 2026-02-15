@@ -53,6 +53,12 @@ jest.mock('openai', () => ({
   })),
 }));
 
+const mockSplitAudioFileBySizeHeuristic = jest.fn();
+jest.mock('@/lib/audio/split-audio', () => ({
+  splitAudioFileBySizeHeuristic: (...args: unknown[]) =>
+    mockSplitAudioFileBySizeHeuristic(...args),
+}));
+
 // Mock fs operations
 jest.mock('node:fs', () => ({
   ...jest.requireActual('node:fs'),
@@ -409,22 +415,19 @@ describe('POST /api/(newai)/transcribe', () => {
     });
   });
 
-  describe('File Size Validation', () => {
-    it('should return 400 when file exceeds 25MB', async () => {
-      // Reset mocks
+  describe('File Size and Guardrails', () => {
+    it('should return 400 when file exceeds MAX_UPLOAD_BYTES (guardrails)', async () => {
       jest.clearAllMocks();
 
-      // Setup required mocks
-      (checkAudioTranscriptionQuota as jest.Mock).mockResolvedValueOnce({
-        remaining: 100,
-        usageError: false,
+      mockVerifyKey.mockResolvedValue({
+        data: { valid: true, identity: { externalId: 'test-user-id' } },
+        error: null,
       });
-      (fsPromises.writeFile as jest.Mock).mockResolvedValueOnce(undefined);
-      // Mock stat to return file size > 25MB
-      (fsPromises.stat as jest.Mock).mockResolvedValueOnce({
-        size: 26 * 1024 * 1024, // 26MB
+      (fsPromises.writeFile as jest.Mock).mockResolvedValue(undefined);
+      (fsPromises.stat as jest.Mock).mockResolvedValue({
+        size: 251 * 1024 * 1024, // 251MB, over 250MB guardrail
       });
-      (fsPromises.unlink as jest.Mock).mockResolvedValueOnce(undefined);
+      (fsPromises.unlink as jest.Mock).mockResolvedValue(undefined);
 
       const request = new Request('http://localhost:3000/api/transcribe', {
         method: 'POST',
@@ -442,8 +445,64 @@ describe('POST /api/(newai)/transcribe', () => {
       const data = await response.json();
 
       expect(response.status).toBe(400);
-      expect(data.error).toContain('too large');
+      expect(data.error).toContain('too long to process');
+      expect(data.error).not.toContain('25MB');
       expect(fsPromises.unlink).toHaveBeenCalled();
+    });
+
+    it('should return 200 with merged transcript when file >25MB and under guardrails (chunked)', async () => {
+      jest.clearAllMocks();
+
+      mockVerifyKey.mockResolvedValue({
+        data: { valid: true, identity: { externalId: 'test-user-id' } },
+        error: null,
+      });
+      (checkAudioTranscriptionQuota as jest.Mock).mockResolvedValue({
+        remaining: 100,
+        usageError: false,
+      });
+      (incrementAudioTranscriptionUsage as jest.Mock).mockResolvedValue(undefined);
+      (fsPromises.writeFile as jest.Mock).mockResolvedValue(undefined);
+      (fsPromises.stat as jest.Mock).mockResolvedValue({
+        size: 26 * 1024 * 1024, // 26MB
+      });
+      (fsPromises.unlink as jest.Mock).mockResolvedValue(undefined);
+
+      const chunk1Path = join(tmpdir(), 'chunk_0.mp3');
+      const chunk2Path = join(tmpdir(), 'chunk_1.mp3');
+      mockSplitAudioFileBySizeHeuristic.mockResolvedValue({
+        chunkPaths: [chunk1Path, chunk2Path],
+        overlapSeconds: 2,
+      });
+
+      mockOpenAICreate
+        .mockResolvedValueOnce({ text: 'First chunk text.' })
+        .mockResolvedValueOnce({ text: 'Second chunk text.' });
+
+      const request = new Request('http://localhost:3000/api/transcribe', {
+        method: 'POST',
+        headers: {
+          authorization: 'Bearer valid-key',
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          audio: `data:audio/mp3;base64,${Buffer.from('x'.repeat(1000)).toString('base64')}`,
+          extension: 'mp3',
+        }),
+      });
+
+      const response = await POST(request);
+      const data = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(data.text).toBeDefined();
+      expect(data.text).toContain('First chunk text');
+      expect(data.text).toContain('Second chunk text');
+      expect(mockSplitAudioFileBySizeHeuristic).toHaveBeenCalled();
+      expect(mockOpenAICreate).toHaveBeenCalledTimes(2);
+      expect(incrementAudioTranscriptionUsage).toHaveBeenCalledTimes(1);
+      expect((incrementAudioTranscriptionUsage as jest.Mock).mock.calls[0][0]).toBe('test-user-id');
+      expect((incrementAudioTranscriptionUsage as jest.Mock).mock.calls[0][1]).toBeGreaterThan(0);
     });
   });
 
