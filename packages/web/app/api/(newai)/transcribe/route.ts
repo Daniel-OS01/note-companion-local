@@ -443,6 +443,17 @@ export async function POST(request: Request) {
       }
     }
 
+    const message = error instanceof Error ? error.message : '';
+    if (message === 'AUDIO_UNREADABLE') {
+      return NextResponse.json(
+        {
+          error:
+            'This recording could not be processed (corrupted or unsupported M4A). Try re-exporting as MP3 or WAV, or use a different recorder.',
+        },
+        { status: 400 }
+      );
+    }
+
     return NextResponse.json(
       {
         error:
@@ -476,6 +487,31 @@ async function handlePresignedUrlTranscription(
 
     tempFilePath = join(tmpdir(), `r2_audio_${Date.now()}.${extension}`);
     await fsPromises.writeFile(tempFilePath, buffer);
+
+    // M4A/MP4 must have valid container header (ftyp); catch corruption or wrong content from R2
+    const ext = extension.toLowerCase();
+    if (ext === 'm4a' || ext === 'mp4') {
+      const fh = await fsPromises.open(tempFilePath, 'r');
+      const buf = new Uint8Array(12);
+      const { bytesRead } = await fh.read(buf, 0, 12, 0);
+      await fh.close();
+      const ftyp =
+        bytesRead >= 8 &&
+        buf[4] === 0x66 &&
+        buf[5] === 0x74 &&
+        buf[6] === 0x79 &&
+        buf[7] === 0x70;
+      if (!ftyp) {
+        await fsPromises.unlink(tempFilePath);
+        return NextResponse.json(
+          {
+            error:
+              'The downloaded audio file appears corrupted or invalid. Try uploading again, or export the recording as MP3 or WAV and use that file.',
+          },
+          { status: 400 }
+        );
+      }
+    }
 
     const stats = await fsPromises.stat(tempFilePath);
     const fileBytes = stats.size;
@@ -640,6 +676,17 @@ async function handlePresignedUrlTranscription(
       } catch {
         // Ignore cleanup errors
       }
+    }
+
+    const message = error instanceof Error ? error.message : '';
+    if (message === 'AUDIO_UNREADABLE') {
+      return NextResponse.json(
+        {
+          error:
+            'This recording could not be processed (corrupted or unsupported M4A). Try re-exporting as MP3 or WAV, or use a different recorder.',
+        },
+        { status: 400 }
+      );
     }
 
     return NextResponse.json(

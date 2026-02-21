@@ -38,21 +38,18 @@ export const MeetingRecorder: React.FC<MeetingRecorderProps> = ({ plugin }) => {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       streamRef.current = stream;
 
-      // Use audio/mp4 (M4A) for better compression
-      // 32 kbps mono, 16kHz sample rate
-      const options: MediaRecorderOptions = {
-        mimeType: "audio/mp4",
-        audioBitsPerSecond: 32000,
-      };
-
-      // Fallback to webm if mp4 not supported
+      // Prefer WebM for compatibility (avoids fragmented M4A in Electron that ffmpeg/Whisper can't read)
+      // 32 kbps, fallback to mp4 if WebM not supported (e.g. older Safari)
       let mediaRecorder: MediaRecorder;
       try {
-        mediaRecorder = new MediaRecorder(stream, options);
-      } catch (e) {
-        logger.warn("MP4 not supported, falling back to webm", e);
         mediaRecorder = new MediaRecorder(stream, {
           mimeType: "audio/webm;codecs=opus",
+          audioBitsPerSecond: 32000,
+        });
+      } catch (e) {
+        logger.warn("WebM not supported, falling back to mp4", e);
+        mediaRecorder = new MediaRecorder(stream, {
+          mimeType: "audio/mp4",
           audioBitsPerSecond: 32000,
         });
       }
@@ -123,7 +120,7 @@ export const MeetingRecorder: React.FC<MeetingRecorderProps> = ({ plugin }) => {
             // Convert blob to ArrayBuffer
             const arrayBuffer = await blob.arrayBuffer();
 
-            // Generate filename: YYYY-MM-DD Meeting.m4a (or .webm)
+            // Generate filename: YYYY-MM-DD Meeting.webm (or .m4a if WebM not supported)
             const now = new Date();
             const dateStr = now.toISOString().split("T")[0];
             const extension = blob.type.includes("mp4") ? "m4a" : "webm";

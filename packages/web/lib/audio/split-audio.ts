@@ -53,8 +53,9 @@ function getFfmpegPath(): string {
 }
 
 /**
- * Normalizes M4A/MP4 files for the Whisper API by moving the moov atom to the start (faststart).
- * iOS and some recorders produce M4A with moov at the end, which Whisper rejects as "Invalid file format".
+ * Normalizes M4A/MP4 files for the Whisper API by re-encoding to MP3.
+ * iOS and some recorders produce M4A with moov at the end or non-AAC codecs, which Whisper can reject.
+ * Re-encoding to MP3 guarantees a format Whisper always accepts.
  * Returns a path to use for Whisper and whether the caller must unlink that path when done.
  */
 export async function normalizeAudioForWhisper(
@@ -67,22 +68,27 @@ export async function normalizeAudioForWhisper(
   }
   const outPath = join(
     dirname(inputPath),
-    `whisper_faststart_${Date.now()}.${extension}`
+    `whisper_${Date.now()}.mp3`
   );
   try {
     await execFileAsync(getFfmpegPath(), [
       '-y',
       '-i',
       inputPath,
-      '-c',
-      'copy',
-      '-movflags',
-      '+faststart',
+      '-vn',
+      '-acodec',
+      'libmp3lame',
+      '-b:a',
+      '64k',
       outPath,
     ]);
     return { path: outPath, cleanup: true };
-  } catch {
-    return { path: inputPath, cleanup: false };
+  } catch (err) {
+    console.warn('[normalizeAudioForWhisper] ffmpeg re-encode failed:', err);
+    // Don't fall back: the file is likely corrupted/fragmented and Whisper would reject it too
+    const e = new Error('AUDIO_UNREADABLE');
+    if (err instanceof Error) (e as Error & { cause?: unknown }).cause = err;
+    throw e;
   }
 }
 
