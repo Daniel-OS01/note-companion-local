@@ -6,7 +6,7 @@
 
 import { execFile } from 'node:child_process';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import { promisify } from 'node:util';
 import { promises as fsPromises } from 'node:fs';
 
@@ -49,6 +49,40 @@ function getFfmpegPath(): string {
     return typeof path === 'string' ? path : (path as { default?: string })?.default ?? 'ffmpeg';
   } catch {
     return 'ffmpeg';
+  }
+}
+
+/**
+ * Normalizes M4A/MP4 files for the Whisper API by moving the moov atom to the start (faststart).
+ * iOS and some recorders produce M4A with moov at the end, which Whisper rejects as "Invalid file format".
+ * Returns a path to use for Whisper and whether the caller must unlink that path when done.
+ */
+export async function normalizeAudioForWhisper(
+  inputPath: string,
+  extension: string
+): Promise<{ path: string; cleanup: boolean }> {
+  const ext = extension.toLowerCase();
+  if (ext !== 'm4a' && ext !== 'mp4') {
+    return { path: inputPath, cleanup: false };
+  }
+  const outPath = join(
+    dirname(inputPath),
+    `whisper_faststart_${Date.now()}.${extension}`
+  );
+  try {
+    await execFileAsync(getFfmpegPath(), [
+      '-y',
+      '-i',
+      inputPath,
+      '-c',
+      'copy',
+      '-movflags',
+      '+faststart',
+      outPath,
+    ]);
+    return { path: outPath, cleanup: true };
+  } catch {
+    return { path: inputPath, cleanup: false };
   }
 }
 

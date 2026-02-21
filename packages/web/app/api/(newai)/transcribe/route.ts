@@ -9,7 +9,10 @@ import {
   checkAudioTranscriptionQuota,
   incrementAudioTranscriptionUsage,
 } from '@/drizzle/schema';
-import { splitAudioFileBySizeHeuristic } from '@/lib/audio/split-audio';
+import {
+  normalizeAudioForWhisper,
+  splitAudioFileBySizeHeuristic,
+} from '@/lib/audio/split-audio';
 
 export const runtime = 'nodejs';
 export const maxDuration = 800; // Maximum allowed for Vercel Pro plan (13.3 minutes) for longer audio/video files
@@ -333,17 +336,21 @@ export async function POST(request: Request) {
     }
 
     let chunkPaths: string[] = [];
+    let normalizedPathToCleanup: string | null = null;
 
     try {
       let formattedText: string;
       let transcriptLength: number;
 
       if (fileSizeInMB <= WHISPER_MAX_MB) {
+        const normalized = await normalizeAudioForWhisper(tempFilePath, extension);
+        if (normalized.cleanup) normalizedPathToCleanup = normalized.path;
+        const pathToUse = normalized.path;
         console.log(
-          `[Transcribe] Starting transcription for file: ${tempFilePath}, size: ${fileSizeInMB.toFixed(2)}MB, duration: ${durationInMinutes} minutes`
+          `[Transcribe] Starting transcription for file: ${pathToUse}, size: ${fileSizeInMB.toFixed(2)}MB, duration: ${durationInMinutes} minutes`
         );
         const transcription = await openai.audio.transcriptions.create({
-          file: fs.createReadStream(tempFilePath),
+          file: fs.createReadStream(pathToUse),
           model: 'whisper-1',
         });
         transcriptLength = transcription.text.length;
@@ -406,6 +413,13 @@ export async function POST(request: Request) {
       if (tempFilePath) {
         try {
           await fsPromises.unlink(tempFilePath);
+        } catch {
+          // Ignore cleanup errors
+        }
+      }
+      if (normalizedPathToCleanup) {
+        try {
+          await fsPromises.unlink(normalizedPathToCleanup);
         } catch {
           // Ignore cleanup errors
         }
@@ -521,16 +535,21 @@ async function handlePresignedUrlTranscription(
       baseURL: process.env.OPENAI_API_BASE || 'https://api.openai.com/v1',
     });
 
+    let normalizedPathToCleanup: string | null = null;
+
     try {
       let formattedText: string;
       let transcriptLength: number;
 
       if (fileSizeInMB <= WHISPER_MAX_MB) {
+        const normalized = await normalizeAudioForWhisper(tempFilePath, extension);
+        if (normalized.cleanup) normalizedPathToCleanup = normalized.path;
+        const pathToUse = normalized.path;
         console.log(
-          `[Transcribe R2] Starting transcription: ${tempFilePath}, size: ${fileSizeInMB.toFixed(2)}MB, duration: ${durationInMinutes} minutes`
+          `[Transcribe R2] Starting transcription: ${pathToUse}, size: ${fileSizeInMB.toFixed(2)}MB, duration: ${durationInMinutes} minutes`
         );
         const transcription = await openai.audio.transcriptions.create({
-          file: fs.createReadStream(tempFilePath),
+          file: fs.createReadStream(pathToUse),
           model: 'whisper-1',
         });
         transcriptLength = transcription.text.length;
@@ -593,6 +612,13 @@ async function handlePresignedUrlTranscription(
       if (tempFilePath) {
         try {
           await fsPromises.unlink(tempFilePath);
+        } catch {
+          // Ignore cleanup errors
+        }
+      }
+      if (normalizedPathToCleanup) {
+        try {
+          await fsPromises.unlink(normalizedPathToCleanup);
         } catch {
           // Ignore cleanup errors
         }
