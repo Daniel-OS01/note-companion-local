@@ -21,12 +21,17 @@ export function parseScreenpipeTimestamp(ts: string): Date {
 
 export interface ScreenpipeSearchParams {
   q?: string;
-  content_type?: "all" | "ocr" | "audio";
+  content_type?: "all" | "ocr" | "ocr+ui" | "audio" | "audio+ocr";
   limit?: number;
   start_time?: string;
   end_time?: string;
   app_name?: string;
   window_name?: string;
+}
+
+export interface ScreenpipeSearchOptions {
+  /** When true, allow limit up to 500 (e.g. for Meetings tab). Default cap remains 50. */
+  allowHigherLimit?: boolean;
 }
 
 export interface ScreenpipeResult {
@@ -62,9 +67,13 @@ export class ScreenpipeClient {
   }
 
   /**
-   * Search ScreenPipe for recorded content
+   * Search ScreenPipe for recorded content.
+   * @param options.allowHigherLimit - When true (Meetings tab only), allow limit up to 500. Default cap is 50.
    */
-  async search(params: ScreenpipeSearchParams): Promise<ScreenpipeResult[]> {
+  async search(
+    params: ScreenpipeSearchParams,
+    options?: ScreenpipeSearchOptions
+  ): Promise<ScreenpipeResult[]> {
     try {
       const searchParams = new URLSearchParams();
 
@@ -74,10 +83,11 @@ export class ScreenpipeClient {
       if (params.content_type && params.content_type !== "all") {
         searchParams.append("content_type", params.content_type);
       }
-      // ScreenPipe API accepts limit parameter - examples show 20-50, no documented max
-      // We'll cap at 50 for API compatibility, but allow user settings up to 100
-      // The client will cap at 50 when calling the API
-      searchParams.append("limit", String(Math.min(params.limit || 10, 50)));
+      const maxLimit = options?.allowHigherLimit ? 500 : 50;
+      searchParams.append(
+        "limit",
+        String(Math.min(params.limit || 10, maxLimit))
+      );
       if (params.start_time) {
         searchParams.append("start_time", params.start_time);
       }

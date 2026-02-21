@@ -12,16 +12,52 @@ import {
   ScreenpipeResult,
 } from "../../../services/screenpipe-client";
 import { getAvailablePath } from "../../../fileUtils";
-import { isMeetingLike } from "./meeting-predicate";
+import { getMeetingLikeReason, isMeetingLike } from "./meeting-predicate";
+import {
+  buildSessionTitle,
+  groupMeetingSessions,
+  isSessionValidByEvidence,
+  mergeTranscripts,
+  type MeetingSession,
+  type ScreenpipeItem,
+} from "./screenpipe-meetings-utils";
 
 interface ScreenpipeMeetingsProps {
   plugin: FileOrganizer;
 }
 
+const DETECTION_LIMIT = 500;
+const AUDIO_LIMIT_PER_SESSION = 200;
+const AUDIO_FETCH_CONCURRENCY = 3;
+const PREVIEW_TRANSCRIPT_CHARS = 80;
+
+/** Run at most `concurrency` async tasks at a time; preserve order. */
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  concurrency: number,
+  // eslint-disable-next-line no-unused-vars -- callback type; implementation uses the arg
+  fn: (item: T) => Promise<R>
+): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let nextIdx = 0;
+  async function worker(): Promise<void> {
+    while (nextIdx < items.length) {
+      const i = nextIdx++;
+      results[i] = await fn(items[i]);
+    }
+  }
+  const workers = Array.from(
+    { length: Math.min(concurrency, items.length) },
+    () => worker()
+  );
+  await Promise.all(workers);
+  return results;
+}
+
 export const ScreenpipeMeetings: React.FC<ScreenpipeMeetingsProps> = ({
   plugin,
 }) => {
-  const [results, setResults] = useState<ScreenpipeResult[]>([]);
+  const [sessions, setSessions] = useState<MeetingSession[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [unavailable, setUnavailable] = useState(false);
@@ -37,27 +73,147 @@ export const ScreenpipeMeetings: React.FC<ScreenpipeMeetingsProps> = ({
         const available = await client.isAvailable();
         if (!available) {
           setUnavailable(true);
-          setResults([]);
+          setSessions([]);
           return;
         }
 
+        const rangeEnd = new Date();
         const hours = plugin.settings.screenpipeTimeRange || 6;
-        const end = new Date();
-        const start = new Date(end.getTime() - hours * 60 * 60 * 1000);
-        const searchResults = await client.search({
-          content_type: "audio",
-          limit: plugin.settings.queryScreenpipeLimit || 10,
-          start_time: start.toISOString(),
-          end_time: end.toISOString(),
+        const rangeStart = new Date(
+          rangeEnd.getTime() - hours * 60 * 60 * 1000
+        );
+        const startIso = rangeStart.toISOString();
+        const endIso = rangeEnd.toISOString();
+        const searchOpts = { allowHigherLimit: true as const };
+
+        let detection: ScreenpipeResult[] = [];
+        const contentTypes: Array<"ocr+ui" | "ocr" | "audio+ocr"> = [
+          "ocr+ui",
+          "ocr",
+          "audio+ocr",
+        ];
+        for (const contentType of contentTypes) {
+          try {
+            detection = await client.search(
+              {
+                content_type: contentType,
+                limit: DETECTION_LIMIT,
+                start_time: startIso,
+                end_time: endIso,
+              },
+              searchOpts
+            );
+            if (contentType === "audio+ocr") {
+              detection = detection.filter((r) => r.type === "OCR");
+            }
+            if (detection.length > 0) break;
+          } catch (err) {
+            logger.error(
+              `ScreenPipe meetings detection failed (content_type=${contentType})`,
+              err
+            );
+          }
+        }
+
+        const normalized: ScreenpipeItem[] = detection.map((r) => {
+          const c = r.content;
+          const reason = c ? getMeetingLikeReason(c) : null;
+          return {
+            type: r.type,
+            timestamp: c?.timestamp,
+            time: c?.timestamp,
+            content: c
+              ? {
+                  ...c,
+                  transcript: c.transcription,
+                }
+              : undefined,
+            detectionReason: reason ?? undefined,
+          };
         });
 
-        const meetingOnly = searchResults.filter(r =>
-          isMeetingLike(r.content ?? {})
+        const meetingHits = normalized.filter((item) =>
+          isMeetingLike(item.content ?? {})
         );
-        setResults(meetingOnly);
+
+        const sessionBases = groupMeetingSessions(meetingHits);
+        const validBases = sessionBases.filter(isSessionValidByEvidence);
+
+        const builtSessions = await mapWithConcurrency(
+          validBases,
+          AUDIO_FETCH_CONCURRENCY,
+          async (base) => {
+            const padStart = new Date(
+              Math.max(
+                base.start.getTime() - 2 * 60 * 1000,
+                rangeStart.getTime()
+              )
+            );
+            const padEnd = new Date(
+              Math.min(
+                base.end.getTime() + 2 * 60 * 1000,
+                rangeEnd.getTime()
+              )
+            );
+            let audio: ScreenpipeItem[] = [];
+            try {
+              const audioResults = await client.search(
+                {
+                  content_type: "audio",
+                  limit: AUDIO_LIMIT_PER_SESSION,
+                  start_time: padStart.toISOString(),
+                  end_time: padEnd.toISOString(),
+                },
+                searchOpts
+              );
+              audio = audioResults.map((r) => ({
+                type: r.type,
+                timestamp: r.content?.timestamp,
+                time: r.content?.timestamp,
+                content: {
+                  ...r.content,
+                  transcript: r.content?.transcription,
+                },
+              }));
+            } catch (err) {
+              logger.error("ScreenPipe audio fetch failed for session", err);
+            }
+            const transcript = mergeTranscripts(audio);
+            const { provider, title, detectedVia } = buildSessionTitle(
+              base.evidence
+            );
+            if (audio.length > 0) {
+              console.log(
+                "[screenpipe meetings] session audio items:",
+                audio.length
+              );
+            }
+            return {
+              key: base.key,
+              provider,
+              title,
+              start: base.start,
+              end: base.end,
+              evidence: base.evidence,
+              audio,
+              transcript,
+              detectedVia,
+            } satisfies MeetingSession;
+          }
+        );
+
+        console.log(
+          "[screenpipe meetings] detection:",
+          detection.length,
+          "meetingHits:",
+          meetingHits.length,
+          "sessions:",
+          builtSessions.length
+        );
+        setSessions(builtSessions);
       } catch (error) {
         logger.error("ScreenPipe meetings fetch failed", error);
-        setResults([]);
+        setSessions([]);
       } finally {
         setIsLoading(false);
         setIsRefreshing(false);
@@ -66,7 +222,6 @@ export const ScreenpipeMeetings: React.FC<ScreenpipeMeetingsProps> = ({
     [
       plugin.settings.screenpipeApiUrl,
       plugin.settings.screenpipeTimeRange,
-      plugin.settings.queryScreenpipeLimit,
     ]
   );
 
@@ -139,24 +294,23 @@ export const ScreenpipeMeetings: React.FC<ScreenpipeMeetingsProps> = ({
     }
   };
 
-  const formatRecordingLabel = (result: ScreenpipeResult): string => {
-    const c = result.content ?? {};
-    const app = c.app_name ?? "Meeting";
-    const window = c.window_name ? ` - ${c.window_name}` : "";
-    const ts = c.timestamp ? formatDate(c.timestamp).split(" ")[0] : "";
-    return `ScreenPipe - ${app}${window} - ${ts}`.slice(0, 80);
+  const formatRecordingLabel = (session: MeetingSession): string => {
+    const startStr = session.start
+      ? session.start.toISOString().slice(0, 10)
+      : "";
+    const title = (session.title || "Meeting").replace(/[^\w\s-]/g, "").slice(0, 30);
+    return `ScreenPipe - ${title} - ${startStr}`.slice(0, 80);
   };
 
   const enhanceFromScreenPipe = async (
-    result: ScreenpipeResult,
+    transcript: string,
     currentNoteContent: string,
     activeFile: TFile,
     recordingDate: string | null,
     recordingFileName: string
   ) => {
-    const transcript = (result.content?.transcription ?? "").trim();
-    if (!transcript) {
-      new Notice("No transcript for this item");
+    if (!transcript.trim()) {
+      new Notice("No transcript for this session");
       return;
     }
 
@@ -194,10 +348,11 @@ export const ScreenpipeMeetings: React.FC<ScreenpipeMeetingsProps> = ({
     const decoder = new TextDecoder();
     let enhancedContent = "";
     if (!reader) throw new Error("No response body");
-    while (true) {
+    let streamDone = false;
+    while (!streamDone) {
       const { done, value } = await reader.read();
-      if (done) break;
-      enhancedContent += decoder.decode(value, { stream: true });
+      streamDone = done;
+      if (!done && value) enhancedContent += decoder.decode(value, { stream: true });
     }
 
     enhancedContent = enhancedContent.replace(
@@ -217,33 +372,29 @@ export const ScreenpipeMeetings: React.FC<ScreenpipeMeetingsProps> = ({
     new Notice("Note enhanced successfully!");
   };
 
-  const handleEnhanceNote = async (result: ScreenpipeResult) => {
+  const handleEnhanceNote = async (session: MeetingSession) => {
     const activeFile = plugin.app.workspace.getActiveFile();
     if (!activeFile) {
       new Notice("Please open a note to enhance");
       return;
     }
-    const transcript = (result.content?.transcription ?? "").trim();
-    if (!transcript) {
-      new Notice("No transcript for this item");
+    if (!session.transcript.trim()) {
+      new Notice("No transcript for this session");
       return;
     }
 
     try {
       const currentNoteContent = await plugin.app.vault.read(activeFile);
-      const recordingDate = result.content?.timestamp
-        ? parseScreenpipeTimestamp(result.content.timestamp).toLocaleDateString(
-            "en-US",
-            {
-              year: "numeric",
-              month: "long",
-              day: "numeric",
-            }
-          )
+      const recordingDate = session.start
+        ? session.start.toLocaleDateString("en-US", {
+            year: "numeric",
+            month: "long",
+            day: "numeric",
+          })
         : null;
-      const recordingFileName = formatRecordingLabel(result);
+      const recordingFileName = formatRecordingLabel(session);
       await enhanceFromScreenPipe(
-        result,
+        session.transcript,
         currentNoteContent,
         activeFile,
         recordingDate,
@@ -256,23 +407,21 @@ export const ScreenpipeMeetings: React.FC<ScreenpipeMeetingsProps> = ({
     }
   };
 
-  const handleCreateNote = async (result: ScreenpipeResult) => {
-    const transcript = (result.content?.transcription ?? "").trim();
-    if (!transcript) {
-      new Notice("No transcript for this item");
+  const handleCreateNote = async (session: MeetingSession) => {
+    if (!session.transcript.trim()) {
+      new Notice("No transcript for this session");
       return;
     }
 
     try {
       const folder = plugin.settings.recordingsFolderPath || "Recordings";
       await plugin.app.vault.adapter.mkdir(folder);
-      const c = result.content ?? {};
-      const dateStr = c.timestamp
-        ? parseScreenpipeTimestamp(c.timestamp).toISOString().slice(0, 10)
+      const dateStr = session.start
+        ? session.start.toISOString().slice(0, 10)
         : new Date().toISOString().slice(0, 10);
-      const appName =
-        (c.app_name ?? "Meeting").replace(/[^\w\s-]/g, "").slice(0, 30) ||
-        "Meeting";
+      const appName = (session.title ?? "Meeting")
+        .replace(/[^\w\s-]/g, "")
+        .slice(0, 30) || "Meeting";
       const baseFileName = `Meeting ${dateStr} ${appName}.md`;
       const desiredPath = `${folder}/${baseFileName}`;
       const filePath = await getAvailablePath(plugin.app, desiredPath);
@@ -281,16 +430,16 @@ export const ScreenpipeMeetings: React.FC<ScreenpipeMeetingsProps> = ({
       if (!newFile || !(newFile instanceof TFile))
         throw new Error("Failed to create file");
 
-      const recordingDate = c.timestamp
-        ? parseScreenpipeTimestamp(c.timestamp).toLocaleDateString("en-US", {
+      const recordingDate = session.start
+        ? session.start.toLocaleDateString("en-US", {
             year: "numeric",
             month: "long",
             day: "numeric",
           })
         : null;
-      const recordingFileName = formatRecordingLabel(result);
+      const recordingFileName = formatRecordingLabel(session);
       await enhanceFromScreenPipe(
-        result,
+        session.transcript,
         "",
         newFile,
         recordingDate,
@@ -335,24 +484,48 @@ export const ScreenpipeMeetings: React.FC<ScreenpipeMeetingsProps> = ({
         </button>
       </div>
 
-      {results.length === 0 ? (
+      {sessions.length === 0 ? (
         <p className={tw("text-sm text-[--text-muted]")}>
-          No meeting audio in the last{" "}
+          No meetings in the last{" "}
           {plugin.settings.screenpipeTimeRange ?? 6} hours.
         </p>
       ) : (
         <div className={tw("space-y-2")}>
-          {results.map((result, index) => {
-            const c = result.content ?? {};
-            const transcript = (c.transcription ?? "").trim();
-            const preview = transcript
-              ? transcript.slice(0, 80) + (transcript.length > 80 ? "…" : "")
-              : "No transcript";
-            const hasTranscript = transcript.length > 0;
+          {sessions.map((session, index) => {
+            const transcriptPreview =
+              session.transcript.trim().length > 0
+                ? session.transcript
+                    .slice(0, PREVIEW_TRANSCRIPT_CHARS)
+                    .trim() +
+                  (session.transcript.length > PREVIEW_TRANSCRIPT_CHARS
+                    ? "…"
+                    : "")
+                : "No audio transcript found";
+            const hasTranscript = session.transcript.trim().length > 0;
+            const firstEvidence = session.evidence[0]?.content;
+            const evidenceWindow = firstEvidence?.window_name ?? "—";
+            const evidenceUrlRaw =
+              firstEvidence?.browser_url ?? firstEvidence?.url ?? "";
+            let evidenceHost = "—";
+            if (evidenceUrlRaw) {
+              try {
+                evidenceHost = new URL(
+                  evidenceUrlRaw.startsWith("http")
+                    ? evidenceUrlRaw
+                    : `https://${evidenceUrlRaw}`
+                ).hostname;
+              } catch {
+                evidenceHost = evidenceUrlRaw.slice(0, 30);
+              }
+            }
+            const timeRange =
+              session.start && session.end
+                ? `${formatDate(session.start.toISOString())} – ${formatDate(session.end.toISOString())}`
+                : "—";
 
             return (
               <div
-                key={`${c.timestamp ?? index}-${c.app_name ?? ""}`}
+                key={`${session.key}-${session.start?.getTime() ?? index}`}
                 className={tw(
                   "border border-[--background-modifier-border] rounded p-3 hover:bg-[--background-modifier-hover]"
                 )}
@@ -369,30 +542,48 @@ export const ScreenpipeMeetings: React.FC<ScreenpipeMeetingsProps> = ({
                           "text-sm font-medium text-[--text-normal]"
                         )}
                       >
-                        {c.app_name ?? "Meeting"}
-                        {c.window_name ? ` — ${c.window_name}` : ""}
+                        {session.title}
                       </span>
                     </div>
                     <div
                       className={tw("text-xs text-[--text-muted] space-x-3")}
                     >
-                      <span title="Time in your local timezone (from ScreenPipe)">
-                        {c.timestamp ? formatDate(c.timestamp) : "—"}
+                      <span title="Session time range (from ScreenPipe)">
+                        {timeRange}
                       </span>
                     </div>
                     <p
                       className={tw(
+                        "text-xs text-[--text-muted] mt-0.5"
+                      )}
+                      title="Evidence: window and URL host"
+                    >
+                      {evidenceWindow}
+                      {evidenceHost !== "—" ? ` · ${evidenceHost}` : ""}
+                    </p>
+                    <p
+                      className={tw(
+                        "text-xs text-[--text-muted] mt-0.5 capitalize"
+                      )}
+                      title="How this meeting was detected"
+                    >
+                      Detected via: {session.detectedVia}
+                    </p>
+                    <p
+                      className={tw(
                         "text-xs text-[--text-muted] mt-1 truncate"
                       )}
-                      title={transcript || undefined}
+                      title={
+                        hasTranscript ? session.transcript : undefined
+                      }
                     >
-                      {preview}
+                      {transcriptPreview}
                     </p>
                   </div>
                 </div>
                 <div className={tw("flex items-center gap-2 mt-2")}>
                   <Button
-                    onClick={() => handleEnhanceNote(result)}
+                    onClick={() => handleEnhanceNote(session)}
                     disabled={!hasTranscript}
                     className={tw("flex items-center gap-2 text-xs")}
                     title={
@@ -405,7 +596,7 @@ export const ScreenpipeMeetings: React.FC<ScreenpipeMeetingsProps> = ({
                     Enhance note
                   </Button>
                   <Button
-                    onClick={() => handleCreateNote(result)}
+                    onClick={() => handleCreateNote(session)}
                     disabled={!hasTranscript}
                     className={tw("flex items-center gap-2 text-xs")}
                     title={
