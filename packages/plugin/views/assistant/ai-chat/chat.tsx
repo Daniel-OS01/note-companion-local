@@ -4,11 +4,13 @@ import React, {
   useRef,
   useCallback,
   useMemo,
+  useLayoutEffect,
 } from "react";
+import { createPortal } from "react-dom";
 import { useChat, UseChatOptions } from "@ai-sdk/react";
 import { moment, Notice, MarkdownView } from "obsidian";
 import { Button } from "@/components/ui/button";
-import { RefreshCw, AlertCircle, Send, Square, Bot } from "lucide-react";
+import { RefreshCw, AlertCircle, Send, Square, Bot, Download } from "lucide-react";
 import { StyledContainer } from "@/components/ui/utils";
 import { Editor } from "@tiptap/react";
 
@@ -55,6 +57,11 @@ import {
   ChatSession,
 } from "./services/chat-history-manager";
 import { ChatHistoryCombobox } from "./components/chat-history-combobox";
+import {
+  exportChatToVault,
+  copyChatToClipboard,
+} from "./export-chat-as-markdown";
+import { tw } from "../../../lib/utils";
 
 interface ChatComponentProps {
   plugin: FileOrganizer;
@@ -1393,6 +1400,65 @@ export const ChatComponent: React.FC<ChatComponentProps> = ({
   ]);
 
   const [attachments, setAttachments] = useState<LocalAttachment[]>([]);
+  const [exportMenuOpen, setExportMenuOpen] = useState(false);
+  const exportMenuRef = useRef<HTMLDivElement>(null);
+  const exportButtonRef = useRef<HTMLButtonElement>(null);
+  const exportDropdownRef = useRef<HTMLDivElement>(null);
+  const [exportMenuPosition, setExportMenuPosition] = useState<{
+    top: number;
+    right: number;
+  } | null>(null);
+
+  useLayoutEffect(() => {
+    if (!exportMenuOpen || !exportButtonRef.current) {
+      setExportMenuPosition(null);
+      return;
+    }
+    const updatePosition = () => {
+      const btn = exportButtonRef.current;
+      if (!btn) return;
+      const rect = btn.getBoundingClientRect();
+      setExportMenuPosition({
+        top: rect.top,
+        right: window.innerWidth - rect.left + 4,
+      });
+    };
+    updatePosition();
+    const raf = requestAnimationFrame(updatePosition);
+    window.addEventListener("resize", updatePosition);
+    return () => {
+      cancelAnimationFrame(raf);
+      window.removeEventListener("resize", updatePosition);
+    };
+  }, [exportMenuOpen]);
+
+  useEffect(() => {
+    if (!exportMenuOpen) return;
+    const handleClickOutside = (e: MouseEvent) => {
+      const target = e.target as Node;
+      const inTrigger = exportMenuRef.current?.contains(target);
+      const inMenu = exportDropdownRef.current?.contains(target);
+      if (!inTrigger && !inMenu) setExportMenuOpen(false);
+    };
+    document.addEventListener("click", handleClickOutside);
+    return () => document.removeEventListener("click", handleClickOutside);
+  }, [exportMenuOpen]);
+
+  const handleExportSaveAsNote = useCallback(() => {
+    setExportMenuOpen(false);
+    const sessionTitle = activeChatId
+      ? chatHistoryManager.getSession(activeChatId)?.title ?? null
+      : null;
+    exportChatToVault(app, messages, sessionTitle);
+  }, [activeChatId, chatHistoryManager, app, messages]);
+
+  const handleExportCopy = useCallback(() => {
+    setExportMenuOpen(false);
+    const sessionTitle = activeChatId
+      ? chatHistoryManager.getSession(activeChatId)?.title ?? null
+      : null;
+    copyChatToClipboard(messages, sessionTitle);
+  }, [activeChatId, chatHistoryManager, messages]);
 
   const handleAttachmentsChange = useCallback(
     (newAttachments: LocalAttachment[]) => {
@@ -1847,6 +1913,76 @@ export const ChatComponent: React.FC<ChatComponentProps> = ({
       <div className="flex-none border-b border-[--background-modifier-border] px-3 py-1.5 bg-[--background-primary]">
         <div className="flex items-center justify-end">
           <div className="flex items-center gap-2">
+            {/* Export chat as markdown - menu rendered in portal so it isn't clipped by overflow-hidden */}
+            <div ref={exportMenuRef}>
+              <button
+                ref={exportButtonRef}
+                type="button"
+                title="Export chat as markdown"
+                disabled={messages.length === 0}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setExportMenuOpen((open) => !open);
+                }}
+                className={tw(
+                  "clickable-icon flex items-center justify-center w-8 h-8 rounded-md transition-colors",
+                  messages.length === 0
+                    ? "text-[--text-muted] cursor-not-allowed opacity-50"
+                    : "text-[--text-muted] hover:text-[--text-normal] hover:bg-[--background-modifier-hover]"
+                )}
+                aria-label="Export chat as markdown"
+              >
+                <Download className="w-4 h-4" />
+              </button>
+              {exportMenuOpen &&
+                exportMenuPosition &&
+                createPortal(
+                  <div
+                    ref={exportDropdownRef}
+                    role="menu"
+                    className={tw(
+                      "min-w-[200px] py-1 rounded-md border border-[--background-modifier-border]",
+                      "bg-[--background-secondary]"
+                    )}
+                    style={{
+                      position: "fixed",
+                      top: exportMenuPosition.top,
+                      right: exportMenuPosition.right,
+                      zIndex: 10000,
+                    }}
+                  >
+                    <button
+                      type="button"
+                      role="menuitem"
+                      className={tw(
+                        "w-full text-left px-3 py-2 text-sm text-[--text-normal] whitespace-nowrap",
+                        "hover:bg-[--background-modifier-hover]"
+                      )}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleExportSaveAsNote();
+                      }}
+                    >
+                      Save as note in vault
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      className={tw(
+                        "w-full text-left px-3 py-2 text-sm text-[--text-normal] whitespace-nowrap",
+                        "hover:bg-[--background-modifier-hover]"
+                      )}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleExportCopy();
+                      }}
+                    >
+                      Copy to clipboard
+                    </button>
+                  </div>,
+                  document.body
+                )}
+            </div>
             {/* Chat History Combobox - Always show if we have callbacks */}
             {onSelectChat && onDeleteChat && (
               <ChatHistoryCombobox
