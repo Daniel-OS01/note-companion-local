@@ -1,6 +1,8 @@
 import React, { useRef, useState } from "react";
 import { App, TFile, Notice } from "obsidian";
 import { ToolInvocation } from "ai";
+import { resolveFile } from "./resolve-file";
+import { useContextItems } from "../use-context-items";
 
 interface DeleteFilesHandlerProps {
   toolInvocation: ToolInvocation;
@@ -27,11 +29,15 @@ export function DeleteFilesHandler({
 
         const valid: TFile[] = [];
         const invalid: string[] = [];
+        const seenPaths = new Set<string>();
 
         filePaths.forEach((path: string) => {
-          const file = app.vault.getAbstractFileByPath(path);
+          const file = resolveFile(app, path);
           if (file instanceof TFile) {
-            valid.push(file);
+            if (!seenPaths.has(file.path)) {
+              seenPaths.add(file.path);
+              valid.push(file);
+            }
           } else {
             invalid.push(path);
           }
@@ -80,6 +86,17 @@ export function DeleteFilesHandler({
         : message;
 
     new Notice(resultMessage);
+
+    const deletedPaths = new Set(
+      results.filter((r) => r.success).map((r) => r.path)
+    );
+    if (deletedPaths.size > 0) {
+      const store = useContextItems.getState();
+      deletedPaths.forEach((path) => store.removeItem("file", path));
+      if (store.currentFile && deletedPaths.has(store.currentFile.path)) {
+        store.setCurrentFile(null);
+      }
+    }
 
     handleAddResult(
       JSON.stringify({

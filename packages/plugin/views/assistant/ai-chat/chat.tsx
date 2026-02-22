@@ -335,7 +335,7 @@ export const ChatComponent: React.FC<ChatComponentProps> = ({
         freshContextItems.youtubeVideos = {};
       }
 
-      const freshContextString = store.isLightweightMode
+      const contextJson = store.isLightweightMode
         ? JSON.stringify({
             files: Object.fromEntries(
               Object.entries(freshContextItems.files).map(([id, file]) => [
@@ -380,6 +380,21 @@ export const ChatComponent: React.FC<ChatComponentProps> = ({
             textSelections: freshContextItems.textSelections,
           })
         : JSON.stringify(freshContextItems);
+
+      const contextFilePaths = [
+        ...Object.values(freshContextItems.files).map((f: { path: string }) => f.path),
+        ...(freshContextItems.currentFile &&
+        !Object.values(freshContextItems.files).some(
+          (f: { path: string }) => f.path === freshContextItems.currentFile?.path
+        )
+          ? [freshContextItems.currentFile.path]
+          : []),
+      ];
+      const filePathsBlock =
+        contextFilePaths.length > 0
+          ? `Attached file paths — use these exact strings for mergeFiles sourceFiles, getFileMetadata filePaths, or deleteFiles filePaths (do not modify):\n${contextFilePaths.join("\n")}\n\n`
+          : "";
+      const freshContextString = filePathsBlock + contextJson;
 
       // Get fresh editor context directly from app (not from closure)
       // This ensures we get the latest editor selection even after refresh

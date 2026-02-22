@@ -212,7 +212,7 @@ export const chatTools = {
   // New Metadata & Analysis Tools
   getFileMetadata: {
     description:
-      'Extract comprehensive metadata from files including frontmatter, tags, links, headings, and creation/modification dates',
+      'Extract comprehensive metadata from files including frontmatter, tags, links, headings, and creation/modification dates. Use with includeContent: true when merging notes intelligently or when full content is needed for content-aware operations.',
     parameters: z.object({
       filePaths: z
         .array(z.string())
@@ -323,7 +323,7 @@ export const chatTools = {
 
   createNewFiles: {
     description:
-      'Create new notes/documents in the vault with content and optionally link them together. Use this to split content into multiple files or create referenced documents.',
+      'Create new notes/documents in the vault with content and optionally link them together. Use this to split content into multiple files, create referenced documents, or create a single merged note after combining content from multiple files.',
     parameters: z.object({
       files: z
         .array(
@@ -383,7 +383,7 @@ export const chatTools = {
 
   mergeFiles: {
     description:
-      'Combine multiple files into a single file. Useful for consolidating related notes, combining meeting notes, or merging draft sections.',
+      'Combine multiple files into a single file by simple concatenation in order with a separator. Use for "put these in one file" or when the user does not ask for content-aware merging. For intelligent merge (dedupe, unified structure), use getFileMetadata with includeContent: true then createNewFiles as described in the system instructions.',
     parameters: z.object({
       sourceFiles: z
         .array(z.string())

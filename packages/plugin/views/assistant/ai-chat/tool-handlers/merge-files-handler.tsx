@@ -1,6 +1,7 @@
 import React, { useRef, useState } from "react";
 import { App, TFile, Notice } from "obsidian";
 import { ToolInvocation } from "ai";
+import { resolveFile } from "./resolve-file";
 
 interface MergeFilesHandlerProps {
   toolInvocation: ToolInvocation;
@@ -19,6 +20,8 @@ export function MergeFilesHandler({
   const [validFiles, setValidFiles] = useState<TFile[]>([]);
   const [invalidPaths, setInvalidPaths] = useState<string[]>([]);
 
+  const hasAutoRunRef = useRef(false);
+
   React.useEffect(() => {
     const validateFiles = () => {
       if (!hasFetchedRef.current && !("result" in toolInvocation)) {
@@ -27,11 +30,15 @@ export function MergeFilesHandler({
 
         const valid: TFile[] = [];
         const invalid: string[] = [];
+        const seenPaths = new Set<string>();
 
         sourceFiles.forEach((path: string) => {
-          const file = app.vault.getAbstractFileByPath(path);
+          const file = resolveFile(app, path);
           if (file instanceof TFile) {
-            valid.push(file);
+            if (!seenPaths.has(file.path)) {
+              seenPaths.add(file.path);
+              valid.push(file);
+            }
           } else {
             invalid.push(path);
           }
@@ -44,6 +51,64 @@ export function MergeFilesHandler({
 
     validateFiles();
   }, [toolInvocation, app]);
+
+  // Auto-execute merge when all paths resolved and no destructive options, so the chat can complete without requiring a click
+  React.useEffect(() => {
+    if (
+      hasAutoRunRef.current ||
+      "result" in toolInvocation ||
+      validFiles.length < 2 ||
+      invalidPaths.length > 0
+    ) {
+      return;
+    }
+    const { deleteSource = false, outputFileName, outputFolder = "" } = toolInvocation.args;
+    if (deleteSource) return;
+    const outputPath = outputFolder
+      ? `${outputFolder}/${outputFileName}.md`
+      : `${outputFileName}.md`;
+    if (app.vault.getAbstractFileByPath(outputPath) instanceof TFile) {
+      return; // Output exists: show confirm UI so user can choose overwrite or cancel
+    }
+
+    hasAutoRunRef.current = true;
+    const run = async () => {
+      const { separator = "\n\n---\n\n" } = toolInvocation.args;
+      try {
+        const contents: string[] = [];
+        for (const file of validFiles) {
+          contents.push(await app.vault.read(file));
+        }
+        const mergedContent = contents.join(separator);
+        await app.vault.create(outputPath, mergedContent);
+        setIsDone(true);
+        new Notice(`Merged ${validFiles.length} files into "${outputFileName}.md"`);
+        handleAddResult(
+          JSON.stringify({
+            success: true,
+            mergedFile: outputPath,
+            sourceFileCount: validFiles.length,
+            deletedSource: false,
+            message: `Merged ${validFiles.length} files into "${outputFileName}.md"`,
+          })
+        );
+      } catch (err) {
+        hasAutoRunRef.current = false;
+        setIsDone(true);
+        new Notice(`Failed to merge: ${(err as Error).message}`);
+        handleAddResult(
+          JSON.stringify({ success: false, error: (err as Error).message })
+        );
+      }
+    };
+    run();
+  }, [
+    toolInvocation,
+    validFiles,
+    invalidPaths,
+    app,
+    handleAddResult,
+  ]);
 
   const handleConfirmMerge = async () => {
     const {

@@ -2,6 +2,7 @@ import React, { useRef } from "react";
 import { TFile } from "obsidian";
 import { getAllTags } from "obsidian";
 import { ToolHandlerProps } from "./types";
+import { resolveFile } from "./resolve-file";
 
 interface MetadataArgs {
   filePaths: string[];
@@ -37,8 +38,8 @@ export function MetadataHandler({
     filePath: string,
     options: Omit<MetadataArgs, "filePaths">
   ): Promise<FileMetadata | null> => {
-    const file = app.vault.getAbstractFileByPath(filePath);
-    if (!(file instanceof TFile)) return null;
+    const file = resolveFile(app, filePath);
+    if (!file) return null;
 
     const cache = app.metadataCache.getFileCache(file);
     const metadata: FileMetadata = {
