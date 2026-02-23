@@ -392,7 +392,7 @@ export const ChatComponent: React.FC<ChatComponentProps> = ({
       ];
       const filePathsBlock =
         contextFilePaths.length > 0
-          ? `Attached file paths — use these exact strings for mergeFiles sourceFiles, getFileMetadata filePaths, or deleteFiles filePaths (do not modify):\n${contextFilePaths.join("\n")}\n\n`
+          ? `Attached file paths — use these exact strings for mergeFiles sourceFiles, getFileMetadata filePaths, deleteFiles filePaths, or extractHighlights filePath/filePaths (do not modify):\n${contextFilePaths.join("\n")}\n\n`
           : "";
       const freshContextString = filePathsBlock + contextJson;
 

@@ -321,6 +321,31 @@ export const chatTools = {
     }),
   },
 
+  extractHighlights: {
+    description:
+      'Get content from the current note, selection, or specified files so the assistant can extract key quotes and insights. Use when the user asks for highlights, key takeaways, main points, or memorable quotes. Prefer selection when the user has selected text. When the user refers to "this note", "current file", or @-mentioned files, use the exact file paths from the "Attached file paths" / Current File section in the context for filePath or filePaths.',
+    parameters: z.object({
+      scope: z
+        .enum(['selection', 'document', 'files'])
+        .describe('What to read: selection (active editor selection), document (single file), or files (multiple files)'),
+      filePath: z
+        .string()
+        .describe(
+          'For scope "document": path to the file. Use empty string "" for current file.'
+        ),
+      filePaths: z
+        .array(z.string())
+        .describe(
+          'For scope "files": paths of files to extract content from. Use [] when scope is not "files".'
+        ),
+      maxChars: z
+        .number()
+        .describe(
+          'Cap content size to avoid token overflow. Use 30000 as default. Applied per file when scope is "files".'
+        ),
+    }),
+  },
+
   createNewFiles: {
     description:
       'Create new notes/documents in the vault with content and optionally link them together. Use this to split content into multiple files, create referenced documents, or create a single merged note after combining content from multiple files.',
