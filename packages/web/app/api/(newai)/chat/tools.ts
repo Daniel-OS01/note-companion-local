@@ -330,16 +330,19 @@ export const chatTools = {
         .describe('What to read: selection (active editor selection), document (single file), or files (multiple files)'),
       filePath: z
         .string()
+        .default('')
         .describe(
           'For scope "document": path to the file. Use empty string "" for current file.'
         ),
       filePaths: z
         .array(z.string())
+        .default([])
         .describe(
           'For scope "files": paths of files to extract content from. Use [] when scope is not "files".'
         ),
       maxChars: z
         .number()
+        .default(30000)
         .describe(
           'Cap content size to avoid token overflow. Use 30000 as default. Applied per file when scope is "files".'
         ),
