@@ -30,31 +30,45 @@ export const MEETING_APP_NAMES = new Set([
   "google meet",
 ]);
 
+/** App names used for targeted server-side queries. */
+export const MEETING_APP_QUERIES = [
+  "zoom.us",
+  "zoom",
+  "webex",
+  "Cisco Webex",
+  "microsoft teams",
+  "slack",
+];
+
+/** Browser URL prefixes used for targeted server-side queries. */
+export const MEETING_BROWSER_URL_QUERIES = [
+  "meet.google.com",
+  "zoom.us",
+  "teams.microsoft.com",
+  "teams.live.com",
+  "meet.webex.com",
+];
+
 export const MEETING_WINDOW_KEYWORDS = [
   "meet - ",
   "zoom meeting",
   "| call",
   "in a call",
-  "webex",
-  "teams", // Microsoft Teams in browser (e.g. "Microsoft Teams - Meeting" in Chrome)
+  "webex meeting",
   "google meet",
-  "microsoft teams",
-  "meet.google.com",
-  "teams.microsoft.com",
-  "zoom.us",
+  "microsoft teams - meeting",
+  "teams call",
+  "teams - call",
 ];
 
 /** URL hostnames/paths that indicate a meeting (most reliable for in-browser meetings). */
 export const MEETING_URL_PATTERNS = [
-  "meet.google.com",
   "meet.google.com/",
-  "zoom.us/",
   "zoom.us/j/",
-  "teams.microsoft.com",
-  "teams.live.com/",
-  "webex.com",
-  "meet.webex.com",
-  "slack.com/",
+  "zoom.us/wc/",
+  "teams.microsoft.com/l/meetup-join",
+  "teams.live.com/meet/",
+  "meet.webex.com/",
 ];
 
 /**

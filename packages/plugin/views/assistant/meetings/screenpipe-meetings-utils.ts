@@ -193,11 +193,16 @@ function isWeakHit(content: ScreenpipeItemContent | undefined): boolean {
 }
 
 const WEAK_WINDOW_MS = 10 * 60 * 1000;
+const MIN_SESSION_DURATION_MS = 2 * 60 * 1000;
 
 /**
- * Session is valid if it has ≥1 strong hit OR ≥3 weak hits within 10 minutes.
+ * Session is valid if it spans at least 2 minutes AND has ≥1 strong hit
+ * OR ≥3 weak hits within 10 minutes.
  */
 export function isSessionValidByEvidence(session: SessionBase): boolean {
+  const duration = session.end.getTime() - session.start.getTime();
+  if (duration < MIN_SESSION_DURATION_MS) return false;
+
   const hasStrong = session.evidence.some((e) => isStrongHit(e.content));
   if (hasStrong) return true;
 

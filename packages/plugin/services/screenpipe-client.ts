@@ -21,12 +21,13 @@ export function parseScreenpipeTimestamp(ts: string): Date {
 
 export interface ScreenpipeSearchParams {
   q?: string;
-  content_type?: "all" | "ocr" | "ocr+ui" | "audio" | "audio+ocr";
+  content_type?: "all" | "ocr" | "ocr+ui" | "audio" | "audio+ocr" | "vision";
   limit?: number;
   start_time?: string;
   end_time?: string;
   app_name?: string;
   window_name?: string;
+  browser_url?: string;
 }
 
 export interface ScreenpipeSearchOptions {
@@ -99,6 +100,9 @@ export class ScreenpipeClient {
       }
       if (params.window_name) {
         searchParams.append("window_name", params.window_name);
+      }
+      if (params.browser_url) {
+        searchParams.append("browser_url", params.browser_url);
       }
 
       const response = await fetch(

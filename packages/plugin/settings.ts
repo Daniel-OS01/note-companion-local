@@ -61,7 +61,7 @@ export class FileOrganizerSettings {
   showSyncTab = false; // Show Sync tab in assistant (experimental mobile sync feature)
   enableScreenpipe = false; // Enable ScreenPipe integration for screen activity search
   screenpipeApiUrl = "http://localhost:3030"; // ScreenPipe API URL
-  screenpipeTimeRange = 6; // Default time range in hours for ScreenPipe searches (1-24)
+  screenpipeTimeRange = 4; // Default time range in hours for ScreenPipe searches (1-24)
   queryScreenpipeLimit = 10; // Default query limit for ScreenPipe searches (1-100)
 }
 

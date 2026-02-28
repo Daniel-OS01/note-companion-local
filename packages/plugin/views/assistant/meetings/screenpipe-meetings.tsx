@@ -12,7 +12,12 @@ import {
   ScreenpipeResult,
 } from "../../../services/screenpipe-client";
 import { getAvailablePath } from "../../../fileUtils";
-import { getMeetingLikeReason, isMeetingLike } from "./meeting-predicate";
+import {
+  getMeetingLikeReason,
+  isMeetingLike,
+  MEETING_APP_QUERIES,
+  MEETING_BROWSER_URL_QUERIES,
+} from "./meeting-predicate";
 import {
   buildSessionTitle,
   groupMeetingSessions,
@@ -26,7 +31,8 @@ interface ScreenpipeMeetingsProps {
   plugin: FileOrganizer;
 }
 
-const DETECTION_LIMIT = 500;
+const PER_QUERY_LIMIT = 100;
+const COMBINED_DETECTION_CAP = 300;
 const AUDIO_LIMIT_PER_SESSION = 200;
 const AUDIO_FETCH_CONCURRENCY = 3;
 const PREVIEW_TRANSCRIPT_CHARS = 80;
@@ -85,33 +91,47 @@ export const ScreenpipeMeetings: React.FC<ScreenpipeMeetingsProps> = ({
         const startIso = rangeStart.toISOString();
         const endIso = rangeEnd.toISOString();
         const searchOpts = { allowHigherLimit: true as const };
+        const baseParams = {
+          limit: PER_QUERY_LIMIT,
+          start_time: startIso,
+          end_time: endIso,
+        };
 
-        let detection: ScreenpipeResult[] = [];
-        const contentTypes: Array<"ocr+ui" | "ocr" | "audio+ocr"> = [
-          "ocr+ui",
-          "ocr",
-          "audio+ocr",
-        ];
-        for (const contentType of contentTypes) {
-          try {
-            detection = await client.search(
-              {
-                content_type: contentType,
-                limit: DETECTION_LIMIT,
-                start_time: startIso,
-                end_time: endIso,
-              },
-              searchOpts
-            );
-            if (contentType === "audio+ocr") {
-              detection = detection.filter((r) => r.type === "OCR");
-            }
-            if (detection.length > 0) break;
-          } catch (err) {
-            logger.error(
-              `ScreenPipe meetings detection failed (content_type=${contentType})`,
-              err
-            );
+        const queries: Promise<ScreenpipeResult[]>[] = [];
+
+        for (const appName of MEETING_APP_QUERIES) {
+          queries.push(
+            client
+              .search({ ...baseParams, app_name: appName }, searchOpts)
+              .catch((err) => {
+                logger.error(`ScreenPipe app_name query failed: ${appName}`, err);
+                return [] as ScreenpipeResult[];
+              })
+          );
+        }
+
+        for (const browserUrl of MEETING_BROWSER_URL_QUERIES) {
+          queries.push(
+            client
+              .search({ ...baseParams, browser_url: browserUrl }, searchOpts)
+              .catch((err) => {
+                logger.error(`ScreenPipe browser_url query failed: ${browserUrl}`, err);
+                return [] as ScreenpipeResult[];
+              })
+          );
+        }
+
+        const queryResults = await Promise.all(queries);
+
+        const seen = new Set<string>();
+        const detection: ScreenpipeResult[] = [];
+        for (const batch of queryResults) {
+          for (const r of batch) {
+            if (detection.length >= COMBINED_DETECTION_CAP) break;
+            const dedupeKey = `${r.content?.timestamp ?? ""}|${r.content?.app_name ?? ""}|${r.content?.window_name ?? ""}`;
+            if (seen.has(dedupeKey)) continue;
+            seen.add(dedupeKey);
+            detection.push(r);
           }
         }
 
@@ -487,7 +507,7 @@ export const ScreenpipeMeetings: React.FC<ScreenpipeMeetingsProps> = ({
       {sessions.length === 0 ? (
         <p className={tw("text-sm text-[--text-muted]")}>
           No meetings in the last{" "}
-          {plugin.settings.screenpipeTimeRange ?? 6} hours.
+          {plugin.settings.screenpipeTimeRange ?? 4} hours.
         </p>
       ) : (
         <div className={tw("space-y-2")}>
