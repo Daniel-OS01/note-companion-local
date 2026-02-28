@@ -279,7 +279,7 @@ export async function POST(request: Request) {
 
     const openai = new OpenAI({
       apiKey: process.env.OPENAI_API_KEY,
-      baseURL: process.env.OPENAI_API_BASE || 'https://api.openai.com/v1',
+      baseURL: process.env.OPENAI_WHISPER_BASE_URL || process.env.OPENAI_API_BASE || 'https://api.openai.com/v1',
     });
 
     const stats = await fsPromises.stat(tempFilePath);
@@ -568,7 +568,7 @@ async function handlePresignedUrlTranscription(
 
     const openai = new OpenAI({
       apiKey: process.env.OPENAI_API_KEY,
-      baseURL: process.env.OPENAI_API_BASE || 'https://api.openai.com/v1',
+      baseURL: process.env.OPENAI_WHISPER_BASE_URL || process.env.OPENAI_API_BASE || 'https://api.openai.com/v1',
     });
 
     let normalizedPathToCleanup: string | null = null;

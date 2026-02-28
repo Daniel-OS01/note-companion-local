@@ -327,6 +327,8 @@ Run models completely offline using Ollama or other OpenAI-compatible local LLM 
 
 **Note:** The backend will route all AI requests to your local Ollama instance. The plugin's "Server URL" setting in Advanced Settings is for connecting the plugin to your backend server, not for configuring the LLM endpoint.
 
+If you host **Whisper** (audio transcription) separately from Ollama, set `OPENAI_WHISPER_BASE_URL` to your Whisper API base (e.g. `http://localhost:9000/v1`). When set, all transcription requests use this URL; when unset, `OPENAI_API_BASE` is used.
+
 ## Troubleshooting
 
 ### Common Issues
@@ -459,6 +461,8 @@ OPENAI_API_KEY=your_key  # Or any dummy value if not required
 ```
 
 This will route all AI requests to your custom endpoint. See the "Local Models (Ollama)" section above for an example with Ollama.
+
+- **`OPENAI_WHISPER_BASE_URL`** (optional): When set, all Whisper/audio transcription requests use this URL. When unset, transcription uses `OPENAI_API_BASE`. Use this when you host Whisper on a different endpoint than your main LLM (e.g. Ollama for chat, local Whisper for transcription).
 
 ## Getting Help
 

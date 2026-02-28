@@ -392,7 +392,7 @@ export async function generateTranscriptFromAudio(
 ): Promise<string> {
   const openai = new OpenAI({
     apiKey: openaiApiKey,
-    baseURL: process.env.OPENAI_API_BASE || 'https://api.openai.com/v1',
+    baseURL: process.env.OPENAI_WHISPER_BASE_URL || process.env.OPENAI_API_BASE || 'https://api.openai.com/v1',
     dangerouslyAllowBrowser: true,
   });
 
