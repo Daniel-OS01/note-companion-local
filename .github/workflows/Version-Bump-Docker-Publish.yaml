@@ -1,0 +1,456 @@
+name: Version Bump & Docker Publish
+
+# =============================================================================
+# HOW THIS WORKFLOW WORKS — READ THIS FIRST
+# =============================================================================
+#
+# This workflow has two entry points that feed into one shared Docker build job:
+#
+#  PATH A — Automatic (push to master)
+#  ─────────────────────────────────────
+#  When you push code to master, the 'auto-bump' job runs first:
+#    1. It reads the current version from packages/web/package.json.
+#    2. It bumps the version (patch by default; see BUMP TYPE below).
+#    3. It commits the version change back to master and creates a git tag.
+#    4. It passes the new version to the 'docker-publish' job via job outputs.
+#    5. The 'docker-publish' job builds and pushes the image tagged with that
+#       version (and optionally :latest).
+#
+#  PATH B — Manual override (workflow_dispatch)
+#  ─────────────────────────────────────────────
+#  When you trigger the workflow manually from the Actions UI:
+#    1. The 'auto-bump' job is skipped entirely.
+#    2. You provide an explicit version (e.g. v1.2.3) in the dispatch input.
+#    3. The 'docker-publish' job uses that version directly.
+#    Use this path for hotfixes, rollbacks, or re-publishing a specific version.
+#
+#  BUMP TYPE — how to control patch vs minor vs major
+#  ───────────────────────────────────────────────────
+#  By default every push bumps the patch number (1.2.3 → 1.2.4).
+#  To bump minor instead, include [minor] anywhere in your commit message.
+#  To bump major instead, include [major] anywhere in your commit message.
+#  Examples:
+#    git commit -m "add user dashboard [minor]"
+#    git commit -m "breaking API change [major]"
+#
+#  SKIPPING THE WORKFLOW
+#  ─────────────────────
+#  Include [skip ci] or [no bump] in your commit message to push to master
+#  without triggering a version bump or Docker build at all.
+#  This is useful for documentation edits, README changes, etc.
+#
+# =============================================================================
+
+on:
+  push:
+    branches:
+      - master
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Explicit version tag to publish (e.g. v1.2.3). Skips auto-bump.'
+        required: true
+        type: string
+      tag_latest:
+        description: 'Also push this image as :latest?'
+        required: false
+        default: 'true'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+      bump_type:
+        description: 'Version bump type (only used for manual dispatch when no version is given)'
+        required: false
+        default: 'patch'
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+      platforms:
+        description: 'Target build platforms. Oracle Cloud = linux/amd64.'
+        required: false
+        default: 'linux/amd64'
+        type: string
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+  # Path to package.json within the monorepo.
+  # Change this if your versioned package.json lives elsewhere.
+  PACKAGE_JSON_PATH: packages/web/package.json
+
+# Top-level permissions for all jobs. The 'contents: write' permission is
+# required so the auto-bump job can push commits and create tags. Without it,
+# git push inside the workflow would fail with a 403 Permission Denied error.
+permissions:
+  contents: write
+  packages: write
+  attestations: write
+  id-token: write
+
+jobs:
+
+  # ===========================================================================
+  # JOB 1 — AUTO-BUMP
+  # Reads package.json, increments the version, commits it, and creates a tag.
+  # This job only runs on push to master — it is skipped for workflow_dispatch.
+  # ===========================================================================
+  auto-bump:
+    name: Bump version & create git tag
+    runs-on: ubuntu-latest
+
+    # Only run on push, not on manual dispatch (dispatch has its own version).
+    # Also skip if the commit message contains [skip ci] or [no bump].
+    if: |
+      github.event_name == 'push' &&
+      !contains(github.event.head_commit.message, '[skip ci]') &&
+      !contains(github.event.head_commit.message, '[no bump]')
+
+    outputs:
+      # This output is consumed by the docker-publish job below.
+      # It will be the newly created version tag, e.g. "v1.2.5".
+      new_version: ${{ steps.bump.outputs.new_version }}
+
+    steps:
+      - name: Checkout repository (with full history)
+        uses: actions/checkout@v4
+        with:
+          # fetch-depth: 0 fetches all commits and tags, not just the latest.
+          # The autotag action and our version-reading logic both need the full
+          # history to correctly determine whether a tag already exists and to
+          # generate a meaningful changelog between the last tag and HEAD.
+          fetch-depth: 0
+          # We must use a token with write permission to push the bump commit.
+          # GITHUB_TOKEN works here because we set 'contents: write' above.
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          # npm version (which does the actual semver increment) is a built-in
+          # npm command available with any Node version. We use 20 for parity
+          # with what the Dockerfile uses to build the application.
+          node-version: '20'
+
+      - name: Configure git identity
+        # npm version creates a git commit. Without a git user identity, that
+        # commit will fail with "Please tell me who you are" error.
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Determine bump type from commit message
+        id: bump-type
+        shell: bash
+        run: |
+          MSG="${{ github.event.head_commit.message }}"
+          if echo "$MSG" | grep -qi '\[major\]'; then
+            echo "bump=major" >> "$GITHUB_OUTPUT"
+            echo "Detected [major] in commit message — bumping major version."
+          elif echo "$MSG" | grep -qi '\[minor\]'; then
+            echo "bump=minor" >> "$GITHUB_OUTPUT"
+            echo "Detected [minor] in commit message — bumping minor version."
+          else
+            echo "bump=patch" >> "$GITHUB_OUTPUT"
+            echo "No [major] or [minor] keyword found — bumping patch version (default)."
+          fi
+
+      - name: Bump version in package.json
+        id: bump
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        run: |
+          BUMP_TYPE="${{ steps.bump-type.outputs.bump }}"
+          PKG_PATH="${{ env.PACKAGE_JSON_PATH }}"
+
+          echo "Running: npm version $BUMP_TYPE in $PKG_PATH"
+
+          # `npm version` in a subdirectory requires us to cd into it.
+          # We capture the new version string it prints (e.g. "v1.2.5").
+          cd "$(dirname "$PKG_PATH")"
+          NEW_VERSION=$(npm version "$BUMP_TYPE" --no-git-tag-version)
+          # npm version prints the version with a 'v' prefix: v1.2.5
+          echo "New version: $NEW_VERSION"
+          echo "new_version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
+
+          # Go back to repo root to commit all changes at once
+          cd "$GITHUB_WORKSPACE"
+
+          # Stage the package.json change
+          git add "$PKG_PATH"
+
+          # The commit message [skip ci] is intentional — we do NOT want this
+          # version-bump commit to re-trigger this workflow again, which would
+          # create an infinite loop of bumps. GitHub Actions skips workflows
+          # when the triggering commit message contains [skip ci].
+          git commit -m "chore: bump version to $NEW_VERSION [skip ci]"
+
+          # Push the commit back to master
+          git push origin master
+
+          echo "Version bump committed and pushed."
+
+      # After the bump commit is on master, we use the Klemensas/action-autotag
+      # action to create the git tag. We pass the new version explicitly via the
+      # 'version' input rather than letting it re-read package.json, because at
+      # this point the checkout is stale (we just pushed a new commit) and we
+      # already know the exact version we want to tag.
+      #
+      # The tag_prefix: "v" ensures the tag is formatted as v1.2.5 to match
+      # what our Docker workflow expects (semver with v prefix).
+      - name: Create git tag via action-autotag
+        uses: Klemensas/action-autotag@stable
+        with:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          version: ${{ steps.bump.outputs.new_version }}
+          tag_prefix: ""
+          # We suppress the default changelog message in favour of a clean tag.
+          # Remove this line if you want an auto-generated commit changelog as
+          # the tag annotation — it can be useful for GitHub Releases.
+          tag_message: "Release ${{ steps.bump.outputs.new_version }}"
+
+
+  # ===========================================================================
+  # JOB 2 — DOCKER PUBLISH
+  # Builds the image and pushes it to ghcr.io. Runs after auto-bump (path A)
+  # or directly from workflow_dispatch (path B).
+  # ===========================================================================
+  docker-publish:
+    name: Build & publish Docker image
+    runs-on: ubuntu-latest
+
+    # This job must wait for auto-bump to finish when running on push.
+    # On workflow_dispatch, auto-bump is skipped so 'needs' is satisfied
+    # immediately (GitHub treats a skipped dependency as satisfied).
+    needs: auto-bump
+
+    # Run this job when:
+    #   - It's a manual dispatch (always), OR
+    #   - It's a push AND auto-bump actually ran (wasn't skipped)
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'push' &&
+       !contains(github.event.head_commit.message, '[skip ci]') &&
+       !contains(github.event.head_commit.message, '[no bump]'))
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # -----------------------------------------------------------------------
+      # Resolve which version we are building.
+      # Path A (push): use the output from the auto-bump job.
+      # Path B (dispatch): use the manually provided version input.
+      # Both paths are normalised here so all subsequent steps just use
+      # ${{ steps.resolve-version.outputs.version }} without branching.
+      # -----------------------------------------------------------------------
+      - name: Resolve version to build
+        id: resolve-version
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            VERSION="${{ github.event.inputs.version }}"
+            echo "Manual dispatch — using provided version: $VERSION"
+          else
+            VERSION="${{ needs.auto-bump.outputs.new_version }}"
+            echo "Push trigger — using auto-bumped version: $VERSION"
+          fi
+
+          # Validate that we have a proper semver tag either way.
+          if [[ ! "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([\-+][A-Za-z0-9._-]+)?$ ]]; then
+            echo "::error::Resolved version '$VERSION' is not valid semver (e.g. v1.2.3)."
+            exit 1
+          fi
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Resolved version: $VERSION"
+
+      # -----------------------------------------------------------------------
+      # Determine whether to also tag :latest.
+      # On push: always tag latest (you pushed to master — that IS latest).
+      # On dispatch: respect the tag_latest input (defaults to true).
+      # -----------------------------------------------------------------------
+      - name: Resolve tag_latest flag
+        id: resolve-latest
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "push" ]]; then
+            echo "tag_latest=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag_latest=${{ github.event.inputs.tag_latest }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      # -----------------------------------------------------------------------
+      # Fix "exec /usr/local/bin/docker-entrypoint.sh: exec format error"
+      # Strips Windows \r line endings from .sh files and ensures they are
+      # executable. Runs BEFORE the Docker build so the files are clean when
+      # Docker copies them into the image layers.
+      # -----------------------------------------------------------------------
+      - name: Normalize shell scripts (fix exec format error)
+        shell: bash
+        run: |
+          echo "Scanning for shell scripts to normalize..."
+          found=false
+          while IFS= read -r -d $'\0' f; do
+            found=true
+            sed -i 's/\r$//' "$f" || true
+            chmod +x "$f" || true
+            echo "  Normalized: $f"
+          done < <(find . \
+            -not -path './.git/*' \
+            -type f \
+            \( -name '*.sh' -o -name 'entrypoint' -o -name 'docker-entrypoint*' \) \
+            -print0)
+          if [ "$found" = "false" ]; then
+            echo "No shell scripts found — nothing to normalize."
+          fi
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata (tags & OCI labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=${{ steps.resolve-version.outputs.version }}
+            type=raw,value=latest,enable=${{ steps.resolve-latest.outputs.tag_latest == 'true' }}
+
+      - name: Show tags that will be pushed
+        run: printf '%s\n' "${{ steps.meta.outputs.tags }}"
+
+      # -----------------------------------------------------------------------
+      # Build and push with retry logic.
+      #
+      # WHY THE RETRY EXISTS:
+      #   Previous failure: "error writing layer blob: failed to parse error
+      #   response 502" — GitHub's "Unicorn" transient error hit mid-push.
+      #   The 5-minute build completed fine but the push was dropped. Without
+      #   retry the entire workflow needs to be triggered again manually.
+      #
+      # HOW THE RETRY WORKS:
+      #   We call `docker buildx build` directly in a bash loop (up to 3
+      #   attempts, with exponential back-off: 30s → 60s → 120s). We use the
+      #   CLI directly rather than docker/build-push-action because GitHub
+      #   Actions action steps cannot be re-invoked inside a bash loop.
+      #   On attempts 2 and 3, the GHA layer cache (cache-from: type=gha)
+      #   restores all previously built layers instantly — only the failed
+      #   push network transfer is repeated, not the full build.
+      #
+      # WHY BASH ARRAYS FOR FLAGS:
+      #   A previous version used sed/tr to convert multiline tag strings into
+      #   CLI flags, which fragmented the command and caused Docker to receive
+      #   zero positional arguments ("docker buildx build requires 1 argument").
+      #   Bash arrays handle multiline values correctly: each array element
+      #   becomes a separate, correctly-quoted shell word, and the build
+      #   context '.' remains clearly the final positional argument.
+      #
+      # WHY provenance=false:
+      #   Without it, docker/build-push-action pushes a second attestation
+      #   manifest that confuses older container runtimes (Dokploy/Portainer).
+      #   We generate our own clean attestation in the explicit step below.
+      # -----------------------------------------------------------------------
+      - name: Build and push Docker image (with retry)
+        id: push
+        shell: bash
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+          LABELS: ${{ steps.meta.outputs.labels }}
+          PLATFORMS: ${{ github.event.inputs.platforms || 'linux/amd64' }}
+        run: |
+          MAX_ATTEMPTS=3
+          DELAY=30
+
+          # Build flag arrays from multiline env vars — one element per line.
+          TAG_ARGS=()
+          while IFS= read -r tag; do
+            [[ -z "$tag" ]] && continue
+            TAG_ARGS+=(--tag "$tag")
+          done <<< "$TAGS"
+
+          LABEL_ARGS=()
+          while IFS= read -r label; do
+            [[ -z "$label" ]] && continue
+            LABEL_ARGS+=(--label "$label")
+          done <<< "$LABELS"
+
+          for attempt in $(seq 1 $MAX_ATTEMPTS); do
+            echo "::group::Build & push attempt $attempt of $MAX_ATTEMPTS"
+
+            if docker buildx build \
+                --platform   "$PLATFORMS" \
+                --file       ./Dockerfile \
+                --provenance false \
+                --cache-from type=gha \
+                --cache-to   "type=gha,mode=max" \
+                --push \
+                "${TAG_ARGS[@]}" \
+                "${LABEL_ARGS[@]}" \
+                . 2>&1 | tee /tmp/build_output.txt; then
+
+              echo "::endgroup::"
+              echo "Push succeeded on attempt $attempt."
+
+              # Extract the image digest for the attestation step.
+              DIGEST=$(grep -oP '(?<=digest: )sha256:[a-f0-9]{64}' /tmp/build_output.txt \
+                       | tail -1 || true)
+              if [[ -z "$DIGEST" ]]; then
+                DIGEST=$(grep -oP 'sha256:[a-f0-9]{64}' /tmp/build_output.txt | tail -1 || true)
+              fi
+              echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+
+            echo "::endgroup::"
+            echo "::warning::Attempt $attempt failed."
+
+            if [ "$attempt" -lt "$MAX_ATTEMPTS" ]; then
+              echo "Waiting ${DELAY}s before next attempt (exponential back-off)..."
+              sleep "$DELAY"
+              DELAY=$((DELAY * 2))
+            fi
+          done
+
+          echo "::error::All $MAX_ATTEMPTS push attempts failed. Check https://githubstatus.com"
+          exit 1
+
+      # Signed SLSA provenance attestation — verifiable link from image digest
+      # back to this exact workflow run and source commit.
+      - name: Generate artifact attestation
+        if: ${{ steps.push.outputs.digest != '' }}
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+
+      # -----------------------------------------------------------------------
+      # Human-readable summary in the Actions UI.
+      # Click the workflow run → Summary tab to see this after it completes.
+      # -----------------------------------------------------------------------
+      - name: Write job summary
+        if: ${{ steps.push.outputs.digest != '' }}
+        run: |
+          echo "## Docker image published" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Field | Value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| **Version** | \`${{ steps.resolve-version.outputs.version }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| **Trigger** | \`${{ github.event_name }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| **Latest tagged** | \`${{ steps.resolve-latest.outputs.tag_latest }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| **Digest** | \`${{ steps.push.outputs.digest }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| **Image** | \`${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Pull command" >> "$GITHUB_STEP_SUMMARY"
+          echo "\`\`\`bash" >> "$GITHUB_STEP_SUMMARY"
+          echo "docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.resolve-version.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "\`\`\`" >> "$GITHUB_STEP_SUMMARY"
