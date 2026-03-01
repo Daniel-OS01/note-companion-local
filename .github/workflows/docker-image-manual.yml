@@ -1,27 +1,35 @@
-name: Docker Image Manual Publish
+name: Docker Image — Self-Host Publish
 
-# This workflow is triggered manually via the GitHub Actions UI.
-# It publishes a versioned, multi-architecture Docker image to ghcr.io.
-# It also normalizes entrypoint scripts to fix "exec format error" issues.
+# =============================================================================
+# MANUAL-ONLY workflow. Never triggers on push or pull_request.
+# You control exactly when an image is published and what version it gets.
+# =============================================================================
 
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version tag in Git Tag format (e.g., v1.2.3). Required to publish.'
+        description: 'Version tag (semver, e.g. v1.2.3). The only tag that will be pushed.'
         required: true
         type: string
-      platforms:
-        description: 'Comma-separated target platforms (default: linux/amd64,linux/arm64)'
+      tag_latest:
+        description: 'Also push this image as :latest? Only do this for stable releases.'
         required: false
-        default: 'linux/amd64,linux/arm64'
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+      platforms:
+        description: 'Target platforms. Oracle Cloud standard = linux/amd64.'
+        required: false
+        default: 'linux/amd64'
         type: string
 
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
 
-# Permissions are declared at the top level so they apply to all jobs.
 permissions:
   contents: read
   packages: write
@@ -30,88 +38,70 @@ permissions:
 
 jobs:
   publish:
-    name: Build and publish Docker image (manual)
+    name: Build & publish self-hosted image
     runs-on: ubuntu-latest
 
     steps:
-      # -----------------------------------------------------------------------
-      # 1. Checkout
-      # -----------------------------------------------------------------------
       - name: Checkout repository
         uses: actions/checkout@v4
 
       # -----------------------------------------------------------------------
-      # 2. Validate version input — must match vMAJOR.MINOR.PATCH (semver)
-      #    with optional pre-release/build metadata suffix.
+      # Validate semver before doing any expensive work.
+      # Accepts: v1.2.3  v1.2.3-rc.1  v1.2.3+build.42
+      # Rejects anything that isn't a proper version string.
       # -----------------------------------------------------------------------
       - name: Validate version input
         id: validate
         shell: bash
         run: |
           VERSION="${{ github.event.inputs.version }}"
-          echo "Validating version: $VERSION"
           if [[ ! "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([\-+][A-Za-z0-9._-]+)?$ ]]; then
-            echo "ERROR: Version must follow Git tag semver format like v1.2.3 (optional prerelease/build suffix)."
+            echo "::error::Version '$VERSION' is not valid semver. Example: v1.2.3"
             exit 1
           fi
-          # Export for later steps
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Version is valid: $VERSION"
 
       # -----------------------------------------------------------------------
-      # 3. QEMU + Buildx — required for multi-architecture builds.
-      #    QEMU emulates non-native CPU architectures (e.g., arm64 on amd64
-      #    runners) so Docker Buildx can produce cross-platform images.
+      # Fix "exec /usr/local/bin/docker-entrypoint.sh: exec format error"
+      #
+      # This error almost always means one of two things:
+      #   1. The script has Windows \r\n line endings, which corrupts the
+      #      shebang line (#!/bin/sh becomes #!/bin/sh\r and Linux rejects it).
+      #   2. The executable bit is missing (git sometimes strips it).
+      #
+      # We strip \r and chmod +x every .sh file we find in the repo.
+      # This runs BEFORE the Docker build, so the files are clean when
+      # Docker copies them into the image.
       # -----------------------------------------------------------------------
-      - name: Set up QEMU (for cross-platform builds)
-        uses: docker/setup-qemu-action@v3
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      # -----------------------------------------------------------------------
-      # 4. Normalize entrypoint/shell scripts in the repo.
-      #    The "exec format error" has two common causes:
-      #      a) Windows-style CRLF line endings corrupting the shebang line.
-      #      b) The executable bit not being set on the script.
-      #    We strip \r (carriage return) and chmod +x every .sh file we find.
-      #    NOTE: If the entrypoint is generated *inside* the Dockerfile (e.g.,
-      #    via a COPY or RUN echo), you must also add the following to your
-      #    Dockerfile:
-      #      RUN sed -i 's/\r$//' /usr/local/bin/docker-entrypoint.sh \
-      #       && chmod +x /usr/local/bin/docker-entrypoint.sh
-      # -----------------------------------------------------------------------
-      - name: Normalize entrypoint line endings & set exec bit
+      - name: Normalize shell scripts (fix exec format error)
         shell: bash
         run: |
-          echo "Scanning for shell scripts / entrypoint files..."
+          echo "Scanning for shell scripts to normalize..."
           found=false
           while IFS= read -r -d $'\0' f; do
             found=true
-            # Strip Windows carriage returns (\r) that corrupt the shebang
             sed -i 's/\r$//' "$f" || true
             chmod +x "$f" || true
-            echo "  Fixed: $f"
+            echo "  Normalized: $f"
           done < <(find . \
             -not -path './.git/*' \
             -type f \
-            \( \
-              -name 'docker-entrypoint.sh' \
-              -o -name 'entrypoint.sh' \
-              -o -name '*.sh' \
-            \) \
+            \( -name '*.sh' -o -name 'entrypoint' -o -name 'docker-entrypoint*' \) \
             -print0)
-
           if [ "$found" = "false" ]; then
-            echo "No shell scripts found in repo. If the entrypoint is created"
-            echo "during the Docker build, ensure your Dockerfile normalizes &"
-            echo "chmods the file (see workflow comment above)."
+            echo "No shell scripts found — nothing to normalize."
           fi
 
       # -----------------------------------------------------------------------
-      # 5. Log in to the GitHub Container Registry.
+      # Buildx is the modern Docker build engine. Required even for single-arch
+      # builds because it supports BuildKit features like layer caching.
+      # No QEMU needed here since we're only targeting linux/amd64 (Oracle).
       # -----------------------------------------------------------------------
-      - name: Log in to the Container registry
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to ghcr.io
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
@@ -119,50 +109,31 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       # -----------------------------------------------------------------------
-      # 6. Extract metadata — emits ONLY the explicit version tag.
-      #    For manual publishes we intentionally skip branch/sha/latest tags
-      #    so that an accidental manual run doesn't overwrite the 'latest' tag.
+      # Emit only the explicit version tag (and optionally :latest).
+      # We deliberately never emit branch/sha/pr tags from a manual workflow —
+      # those are for the CI workflow. Here you want clean, intentional versions.
       # -----------------------------------------------------------------------
-      - name: Extract metadata (tags, labels) for Docker
+      - name: Extract metadata (tags & labels)
         id: meta
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
             type=raw,value=${{ steps.validate.outputs.version }}
+            type=raw,value=latest,enable=${{ github.event.inputs.tag_latest == 'true' }}
 
-      # Helpful debug step — lets you confirm what will be tagged before push.
-      - name: Inspect computed tags
-        run: |
-          echo "Tags that will be applied to the image:"
-          echo "${{ steps.meta.outputs.tags }}"
+      - name: Show tags that will be pushed
+        run: printf '%s\n' "${{ steps.meta.outputs.tags }}"
 
       # -----------------------------------------------------------------------
-      # 7. Guard rail — abort gracefully if no tags were generated.
-      #    (Should not happen after a successful validation step, but is a
-      #    useful safety net against unexpected metadata-action edge cases.)
+      # Build the image using whatever Dockerfile exists in the repo root.
+      # The GHA cache backend means unchanged layers (deps, build tools) are
+      # restored from cache rather than rebuilt — saves 5-10 min on warm runs.
+      # provenance=false avoids a second attestation manifest that can confuse
+      # older container runtimes; we generate it ourselves in the next step.
       # -----------------------------------------------------------------------
-      - name: Decide whether to proceed with build/push
-        id: decide
-        shell: bash
-        run: |
-          tags="${{ steps.meta.outputs.tags }}"
-          if [ -z "$tags" ]; then
-            echo "No tags generated. Skipping build/push."
-            echo "proceed=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "proceed=true" >> "$GITHUB_OUTPUT"
-          fi
-
-      # -----------------------------------------------------------------------
-      # 8. Build and push the multi-arch image.
-      #    The 'platforms' input defaults to linux/amd64,linux/arm64.
-      #    Both variants are bundled into a single manifest list, so the right
-      #    image is automatically selected on pull regardless of host arch.
-      # -----------------------------------------------------------------------
-      - name: Build and push Docker image (multi-arch)
+      - name: Build and push Docker image
         id: push
-        if: ${{ steps.decide.outputs.proceed == 'true' }}
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -171,16 +142,12 @@ jobs:
           platforms: ${{ github.event.inputs.platforms }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          # Enable layer caching via the GitHub Actions cache backend.
-          # This dramatically speeds up repeat builds when layers haven't changed.
+          provenance: false
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # -----------------------------------------------------------------------
-      # 9. Generate a signed build-provenance attestation (SLSA level 2).
-      #    This links the published image digest back to this workflow run,
-      #    allowing consumers to verify the image was built from this repo.
-      # -----------------------------------------------------------------------
+      # Signed provenance attestation — links the image digest back to this
+      # exact workflow run so anyone can verify where the image came from.
       - name: Generate artifact attestation
         if: ${{ steps.push.outputs.digest != '' }}
         uses: actions/attest-build-provenance@v2
@@ -189,31 +156,18 @@ jobs:
           subject-digest: ${{ steps.push.outputs.digest }}
           push-to-registry: true
 
-      # -----------------------------------------------------------------------
-      # 10. Post-run guidance when nothing was pushed.
-      # -----------------------------------------------------------------------
-      - name: Post-run guidance (no tags generated)
-        if: ${{ steps.decide.outputs.proceed == 'false' }}
-        run: |
-          echo "This manual run did not produce any tags."
-          echo "Provide a version like v1.2.3 to publish an image."
-
-      # -----------------------------------------------------------------------
-      # 11. Summary — write a job summary visible in the Actions UI.
-      # -----------------------------------------------------------------------
+      # Human-readable summary shown in the Actions UI after the run.
       - name: Write job summary
         if: ${{ steps.push.outputs.digest != '' }}
         run: |
-          echo "## Docker image published successfully :rocket:" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "## Docker image published" >> "$GITHUB_STEP_SUMMARY"
           echo "| Field | Value |" >> "$GITHUB_STEP_SUMMARY"
           echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
           echo "| **Version** | \`${{ steps.validate.outputs.version }}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| **Platforms** | \`${{ github.event.inputs.platforms }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| **Latest tagged** | \`${{ github.event.inputs.tag_latest }}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| **Digest** | \`${{ steps.push.outputs.digest }}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| **Registry** | \`${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| **Image** | \`${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "### Pull command" >> "$GITHUB_STEP_SUMMARY"
-          echo "\`\`\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "\`\`\`bash" >> "$GITHUB_STEP_SUMMARY"
           echo "docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.validate.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
           echo "\`\`\`" >> "$GITHUB_STEP_SUMMARY"
