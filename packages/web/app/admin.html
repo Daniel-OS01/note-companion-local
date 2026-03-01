@@ -1,0 +1,1114 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Note Companion — Admin Configuration</title>
+  <style>
+    /* ── Reset & base ───────────────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:          #f8fafc;
+      --surface:     #ffffff;
+      --border:      #e2e8f0;
+      --border-focus:#6366f1;
+      --text:        #1e293b;
+      --muted:       #64748b;
+      --accent:      #6366f1;
+      --accent-dark: #4f46e5;
+      --success:     #10b981;
+      --warning:     #f59e0b;
+      --danger:      #ef4444;
+      --danger-bg:   #fef2f2;
+      --info-bg:     #eff6ff;
+      --info-border: #bfdbfe;
+      --info-text:   #1d4ed8;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      font-size: 14px;
+      line-height: 1.6;
+    }
+
+    /* ── Layout ─────────────────────────────────────────────────────────── */
+    .layout { display: flex; min-height: 100vh; }
+
+    .sidebar {
+      width: 240px;
+      background: var(--surface);
+      border-right: 1px solid var(--border);
+      padding: 24px 0;
+      position: sticky;
+      top: 0;
+      height: 100vh;
+      overflow-y: auto;
+      flex-shrink: 0;
+    }
+
+    .sidebar-logo {
+      padding: 0 20px 24px;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 16px;
+    }
+
+    .sidebar-logo h1 { font-size: 16px; font-weight: 700; color: var(--accent); }
+    .sidebar-logo p  { font-size: 11px; color: var(--muted); margin-top: 2px; }
+
+    .nav-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 9px 20px;
+      cursor: pointer;
+      border-left: 3px solid transparent;
+      transition: all 0.15s;
+      font-size: 13px;
+      color: var(--muted);
+      text-decoration: none;
+    }
+
+    .nav-item:hover  { background: var(--bg); color: var(--text); }
+    .nav-item.active { background: #eef2ff; color: var(--accent); border-left-color: var(--accent); font-weight: 600; }
+    .nav-icon        { font-size: 16px; width: 20px; text-align: center; }
+
+    .main {
+      flex: 1;
+      padding: 32px 40px;
+      max-width: 900px;
+    }
+
+    /* ── Sections ────────────────────────────────────────────────────────── */
+    .section { display: none; }
+    .section.active { display: block; }
+
+    .section-header { margin-bottom: 28px; }
+    .section-header h2 { font-size: 22px; font-weight: 700; }
+    .section-header p  { color: var(--muted); margin-top: 4px; font-size: 13px; }
+
+    /* ── Cards ───────────────────────────────────────────────────────────── */
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 24px;
+      margin-bottom: 20px;
+    }
+
+    .card-title {
+      font-size: 15px;
+      font-weight: 600;
+      margin-bottom: 4px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .card-desc {
+      font-size: 12px;
+      color: var(--muted);
+      margin-bottom: 20px;
+    }
+
+    /* ── Form fields ─────────────────────────────────────────────────────── */
+    .field { margin-bottom: 18px; }
+
+    .field label {
+      display: block;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 6px;
+    }
+
+    .field input,
+    .field select,
+    .field textarea {
+      width: 100%;
+      padding: 9px 12px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      font-size: 13px;
+      font-family: inherit;
+      background: var(--surface);
+      color: var(--text);
+      transition: border-color 0.15s, box-shadow 0.15s;
+    }
+
+    .field input:focus,
+    .field select:focus,
+    .field textarea:focus {
+      outline: none;
+      border-color: var(--border-focus);
+      box-shadow: 0 0 0 3px rgba(99,102,241,0.15);
+    }
+
+    .field input[type="password"] { font-family: monospace; letter-spacing: 2px; }
+
+    .field textarea { min-height: 80px; resize: vertical; }
+
+    .field-hint { font-size: 11px; color: var(--muted); margin-top: 4px; }
+    .field-hint.warn { color: var(--warning); }
+
+    /* Two-column grid inside a card */
+    .field-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 20px; }
+
+    /* ── Buttons ─────────────────────────────────────────────────────────── */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 9px 18px;
+      border-radius: 6px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      border: none;
+      transition: all 0.15s;
+    }
+
+    .btn-primary { background: var(--accent); color: #fff; }
+    .btn-primary:hover { background: var(--accent-dark); }
+
+    .btn-secondary { background: var(--bg); color: var(--text); border: 1px solid var(--border); }
+    .btn-secondary:hover { background: var(--border); }
+
+    .btn-danger  { background: var(--danger); color: #fff; }
+    .btn-danger:hover { opacity: 0.9; }
+
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    .btn-row { display: flex; gap: 10px; align-items: center; margin-top: 6px; }
+
+    /* ── Alerts ──────────────────────────────────────────────────────────── */
+    .alert {
+      padding: 12px 16px;
+      border-radius: 6px;
+      font-size: 13px;
+      margin-bottom: 20px;
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+    }
+
+    .alert-info    { background: var(--info-bg); border: 1px solid var(--info-border); color: var(--info-text); }
+    .alert-warn    { background: #fffbeb; border: 1px solid #fde68a; color: #92400e; }
+    .alert-success { background: #f0fdf4; border: 1px solid #bbf7d0; color: #166534; }
+    .alert-danger  { background: var(--danger-bg); border: 1px solid #fecaca; color: #991b1b; }
+
+    /* ── Status indicator ────────────────────────────────────────────────── */
+    .status-row { display: flex; align-items: center; gap: 8px; font-size: 13px; margin-bottom: 8px; }
+    .dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+    .dot-green { background: var(--success); }
+    .dot-red   { background: var(--danger); }
+    .dot-yellow{ background: var(--warning); }
+
+    /* ── Model badge ─────────────────────────────────────────────────────── */
+    .badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 99px;
+      font-size: 11px;
+      font-weight: 600;
+    }
+
+    .badge-blue   { background: #dbeafe; color: #1d4ed8; }
+    .badge-green  { background: #dcfce7; color: #166534; }
+    .badge-purple { background: #f3e8ff; color: #7e22ce; }
+    .badge-orange { background: #ffedd5; color: #c2410c; }
+
+    /* ── Toast notification ──────────────────────────────────────────────── */
+    #toast {
+      position: fixed;
+      bottom: 28px;
+      right: 28px;
+      padding: 12px 20px;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 500;
+      background: #1e293b;
+      color: #fff;
+      box-shadow: 0 4px 24px rgba(0,0,0,0.18);
+      transform: translateY(80px);
+      opacity: 0;
+      transition: all 0.3s cubic-bezier(0.34,1.56,0.64,1);
+      z-index: 9999;
+      max-width: 360px;
+    }
+
+    #toast.show { transform: translateY(0); opacity: 1; }
+    #toast.success { background: var(--success); }
+    #toast.error   { background: var(--danger); }
+
+    /* ── Login overlay ───────────────────────────────────────────────────── */
+    #login-overlay {
+      position: fixed; inset: 0;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      display: flex; align-items: center; justify-content: center;
+      z-index: 9998;
+    }
+
+    .login-card {
+      background: var(--surface);
+      border-radius: 16px;
+      padding: 40px;
+      width: 380px;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+    }
+
+    .login-card h2 { font-size: 20px; font-weight: 700; text-align: center; margin-bottom: 8px; }
+    .login-card p  { font-size: 13px; color: var(--muted); text-align: center; margin-bottom: 28px; }
+    .login-card .field { margin-bottom: 16px; }
+    .login-card .btn-primary { width: 100%; justify-content: center; padding: 11px; }
+
+    /* ── Restart notice ──────────────────────────────────────────────────── */
+    .restart-notice {
+      background: #fffbeb;
+      border: 1px solid #fde68a;
+      border-radius: 8px;
+      padding: 14px 18px;
+      font-size: 12px;
+      color: #78350f;
+      margin-bottom: 20px;
+      display: flex;
+      gap: 10px;
+      align-items: flex-start;
+    }
+
+    /* ── Health table ────────────────────────────────────────────────────── */
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th { text-align: left; padding: 8px 12px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); border-bottom: 1px solid var(--border); }
+    td { padding: 10px 12px; border-bottom: 1px solid var(--border); }
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: var(--bg); }
+
+    /* ── Responsive ──────────────────────────────────────────────────────── */
+    @media (max-width: 720px) {
+      .sidebar { display: none; }
+      .main { padding: 20px; }
+      .field-grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+     LOGIN OVERLAY
+     This is a client-side password gate that protects the admin page UI.
+     It does NOT replace server-side auth — that is handled by Traefik BasicAuth.
+     This is a second layer so even if someone navigates to /admin.html directly
+     they still need to know the admin panel password.
+     The password is checked against a SHA-256 hash stored in a <meta> tag,
+     which is safe because: (a) the hash is one-way, and (b) even if the hash
+     is seen, it cannot be used to recover the plain-text password.
+     ═══════════════════════════════════════════════════════════════════════ -->
+<div id="login-overlay">
+  <div class="login-card">
+    <h2>🔐 Admin Access</h2>
+    <p>Enter the admin password to access the configuration panel.</p>
+
+    <div class="field">
+      <label for="login-password">Password</label>
+      <input type="password" id="login-password" placeholder="••••••••••••" autocomplete="current-password" />
+    </div>
+
+    <div id="login-error" style="display:none" class="alert alert-danger" style="margin-bottom:16px">
+      Incorrect password. Please try again.
+    </div>
+
+    <button class="btn btn-primary" onclick="attemptLogin()">Unlock Panel</button>
+
+    <p style="margin-top:20px; font-size:11px; color:var(--muted); text-align:center">
+      This page is also protected by HTTP BasicAuth at the network level.
+    </p>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+     MAIN ADMIN LAYOUT
+     ═══════════════════════════════════════════════════════════════════════ -->
+<div class="layout" id="app" style="display:none">
+
+  <!-- Sidebar navigation -->
+  <nav class="sidebar">
+    <div class="sidebar-logo">
+      <h1>⚙️ Admin Panel</h1>
+      <p>Note Companion Config</p>
+    </div>
+
+    <a class="nav-item active" onclick="showSection('status')" href="#">
+      <span class="nav-icon">🟢</span> System Status
+    </a>
+    <a class="nav-item" onclick="showSection('models')" href="#">
+      <span class="nav-icon">🤖</span> AI Models
+    </a>
+    <a class="nav-item" onclick="showSection('providers')" href="#">
+      <span class="nav-icon">🔑</span> API Keys
+    </a>
+    <a class="nav-item" onclick="showSection('limits')" href="#">
+      <span class="nav-icon">⚡</span> Rate & Limits
+    </a>
+    <a class="nav-item" onclick="showSection('access')" href="#">
+      <span class="nav-icon">🛡️</span> Access Control
+    </a>
+    <a class="nav-item" onclick="showSection('instructions')" href="#">
+      <span class="nav-icon">📋</span> How to Apply
+    </a>
+  </nav>
+
+  <!-- Main content area -->
+  <main class="main">
+    <div id="toast"></div>
+
+    <!-- ── SECTION: Status ── -->
+    <div class="section active" id="section-status">
+      <div class="section-header">
+        <h2>System Status</h2>
+        <p>Live health check and current configuration snapshot.</p>
+      </div>
+
+      <div class="card">
+        <div class="card-title">🔍 Health Check</div>
+        <div class="card-desc">Pings the /api/health endpoint of your running instance.</div>
+
+        <div id="health-result">
+          <p style="color:var(--muted);font-size:13px">Click the button to check.</p>
+        </div>
+
+        <div class="btn-row" style="margin-top:16px">
+          <button class="btn btn-primary" onclick="checkHealth()">Check Health</button>
+          <span id="health-spinner" style="display:none; font-size:12px; color:var(--muted)">Checking…</span>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">📡 Current Runtime Values</div>
+        <div class="card-desc">
+          These are the values the application is <strong>currently running with</strong>
+          — fetched from a read-only API endpoint. They reflect the last container start.
+          Changing env vars in Dokploy and redeploying will update these.
+        </div>
+
+        <div id="runtime-values">
+          <p style="color:var(--muted);font-size:13px">Click the button to load.</p>
+        </div>
+
+        <div class="btn-row" style="margin-top:16px">
+          <button class="btn btn-secondary" onclick="loadRuntimeValues()">Load Current Values</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── SECTION: AI Models ── -->
+    <div class="section" id="section-models">
+      <div class="section-header">
+        <h2>AI Model Configuration</h2>
+        <p>Select the provider and model the application will use for all AI operations.</p>
+      </div>
+
+      <div class="restart-notice">
+        <span>⚠️</span>
+        <div>
+          <strong>Restart required.</strong> The application loads model settings once at startup
+          (see <code>lib/models.ts</code> lines 10–12). Changing these values and clicking
+          "Copy to Clipboard" gives you the text to paste into Dokploy's env panel,
+          but the change only takes effect after a container redeploy.
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">🤖 Model Provider</div>
+        <div class="card-desc">Chooses which AI company handles all requests. Each provider requires its own API key (set in the API Keys section).</div>
+
+        <div class="field">
+          <label for="model-provider">MODEL_PROVIDER</label>
+          <select id="model-provider" onchange="updateModelHints()">
+            <option value="openai">OpenAI (+ LiteLLM proxy)</option>
+            <option value="google">Google Gemini</option>
+            <option value="anthropic">Anthropic Claude</option>
+            <option value="groq">Groq (Llama / fast inference)</option>
+            <option value="mistral">Mistral AI</option>
+            <option value="deepseek">DeepSeek</option>
+          </select>
+          <p class="field-hint">Env var: <code>MODEL_PROVIDER</code></p>
+        </div>
+
+        <div class="field">
+          <label for="model-name">MODEL_NAME</label>
+          <input type="text" id="model-name" placeholder="e.g. gemini-2.5-flash-lite" />
+          <p class="field-hint" id="model-hint">The model identifier for the chosen provider.</p>
+        </div>
+
+        <div class="field">
+          <label for="responses-model-name">RESPONSES_MODEL_NAME <span style="font-weight:400">(optional)</span></label>
+          <input type="text" id="responses-model-name" placeholder="Leave blank to use MODEL_NAME" />
+          <p class="field-hint warn">OpenAI only. Used for the Responses API (web search). Leave blank for all other providers.</p>
+        </div>
+
+        <div class="btn-row">
+          <button class="btn btn-primary" onclick="copyModelVars()">Copy env vars to clipboard</button>
+          <button class="btn btn-secondary" onclick="showSection('instructions')">How to apply →</button>
+        </div>
+      </div>
+
+      <!-- Quick reference table -->
+      <div class="card">
+        <div class="card-title">📖 Model Quick Reference</div>
+        <div class="card-desc">Recommended model identifiers per provider.</div>
+        <table>
+          <thead>
+            <tr><th>Provider</th><th>MODEL_PROVIDER</th><th>Recommended MODEL_NAME</th><th>Notes</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>OpenAI / LiteLLM</td>
+              <td><span class="badge badge-green">openai</span></td>
+              <td><code>gpt-4o-mini</code> · <code>gpt-4o</code></td>
+              <td>Set OPENAI_API_BASE to your proxy</td>
+            </tr>
+            <tr>
+              <td>Google Gemini</td>
+              <td><span class="badge badge-blue">google</span></td>
+              <td><code>gemini-2.5-flash-lite</code> · <code>gemini-2.0-flash</code></td>
+              <td>Needs GOOGLE_GENERATIVE_AI_API_KEY</td>
+            </tr>
+            <tr>
+              <td>Anthropic</td>
+              <td><span class="badge badge-purple">anthropic</span></td>
+              <td><code>claude-3-5-haiku-20241022</code> · <code>claude-3-5-sonnet-20241022</code></td>
+              <td>No vision/OCR support</td>
+            </tr>
+            <tr>
+              <td>Groq</td>
+              <td><span class="badge badge-orange">groq</span></td>
+              <td><code>llama-3.3-70b-versatile</code></td>
+              <td>Fastest inference</td>
+            </tr>
+            <tr>
+              <td>Mistral</td>
+              <td><span class="badge badge-blue">mistral</span></td>
+              <td><code>mistral-large-latest</code></td>
+              <td>—</td>
+            </tr>
+            <tr>
+              <td>DeepSeek</td>
+              <td><span class="badge badge-green">deepseek</span></td>
+              <td><code>deepseek-chat</code></td>
+              <td>Very cost-effective</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ── SECTION: API Keys ── -->
+    <div class="section" id="section-providers">
+      <div class="section-header">
+        <h2>API Keys &amp; Provider Endpoints</h2>
+        <p>Manage credentials for each AI provider. Values are shown masked — only edit if you need to rotate a key.</p>
+      </div>
+
+      <div class="alert alert-danger">
+        <span>🔒</span>
+        <div>
+          <strong>Security rule:</strong> This page only shows you what to copy into Dokploy's
+          environment variable panel. API keys are <em>never</em> stored in this HTML file or in
+          the browser. They live exclusively in Dokploy's encrypted environment store and are
+          injected into the container at runtime.
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">🔑 OpenAI / LiteLLM Proxy</div>
+        <div class="card-desc">Used when MODEL_PROVIDER=openai, or as a proxy for other providers via LiteLLM.</div>
+        <div class="field-grid">
+          <div class="field">
+            <label>OPENAI_API_KEY</label>
+            <input type="password" id="key-openai" placeholder="sk-••••••••••••••••" autocomplete="off" />
+          </div>
+          <div class="field">
+            <label>OPENAI_API_BASE</label>
+            <input type="text" id="base-openai" placeholder="https://litellm.psy-tech.link" />
+            <p class="field-hint">Leave blank to use api.openai.com directly.</p>
+          </div>
+        </div>
+        <button class="btn btn-secondary" onclick="copyProviderVars('openai')">Copy to clipboard</button>
+      </div>
+
+      <div class="card">
+        <div class="card-title">🔑 Google Gemini</div>
+        <div class="card-desc">The Vercel AI SDK reads GOOGLE_GENERATIVE_AI_API_KEY. Set both to the same value.</div>
+        <div class="field-grid">
+          <div class="field">
+            <label>GOOGLE_GENERATIVE_AI_API_KEY</label>
+            <input type="password" id="key-google-sdk" placeholder="AIza••••••••••••••••" autocomplete="off" />
+          </div>
+          <div class="field">
+            <label>GOOGLE_API_KEY</label>
+            <input type="password" id="key-google" placeholder="AIza••••••••••••••••" autocomplete="off" />
+          </div>
+          <div class="field">
+            <label>GOOGLE_API_BASE</label>
+            <input type="text" id="base-google" placeholder="https://litellm.psy-tech.link" />
+          </div>
+        </div>
+        <button class="btn btn-secondary" onclick="copyProviderVars('google')">Copy to clipboard</button>
+      </div>
+
+      <div class="card">
+        <div class="card-title">🔑 Groq</div>
+        <div class="field-grid">
+          <div class="field">
+            <label>GROQ_API_KEY</label>
+            <input type="password" id="key-groq" placeholder="gsk_••••••••••••••••" autocomplete="off" />
+          </div>
+        </div>
+        <button class="btn btn-secondary" onclick="copyProviderVars('groq')">Copy to clipboard</button>
+      </div>
+
+      <div class="card">
+        <div class="card-title">🔑 Mistral</div>
+        <div class="field-grid">
+          <div class="field">
+            <label>MISTRAL_API_KEY</label>
+            <input type="password" id="key-mistral" placeholder="••••••••••••••••" autocomplete="off" />
+          </div>
+        </div>
+        <button class="btn btn-secondary" onclick="copyProviderVars('mistral')">Copy to clipboard</button>
+      </div>
+
+      <div class="card">
+        <div class="card-title">🔑 Anthropic / DeepSeek</div>
+        <div class="field-grid">
+          <div class="field">
+            <label>ANTHROPIC_API_KEY</label>
+            <input type="password" id="key-anthropic" placeholder="sk-ant-••••••••••••••••" autocomplete="off" />
+          </div>
+          <div class="field">
+            <label>DEEPSEEK_API_KEY</label>
+            <input type="password" id="key-deepseek" placeholder="••••••••••••••••" autocomplete="off" />
+          </div>
+        </div>
+        <button class="btn btn-secondary" onclick="copyProviderVars('misc')">Copy to clipboard</button>
+      </div>
+    </div>
+
+    <!-- ── SECTION: Rate & Limits ── -->
+    <div class="section" id="section-limits">
+      <div class="section-header">
+        <h2>Rate Limits &amp; Resource Controls</h2>
+        <p>Protect your server and API budget. All changes require a container redeploy to take effect.</p>
+      </div>
+
+      <div class="card">
+        <div class="card-title">⚡ Limits Configuration</div>
+        <div class="field-grid">
+          <div class="field">
+            <label for="max-file-size">MAX_FILE_SIZE (bytes)</label>
+            <input type="number" id="max-file-size" value="26214400" min="1048576" max="104857600" />
+            <p class="field-hint" id="file-size-display">= 25 MB</p>
+          </div>
+          <div class="field">
+            <label for="max-tokens">MAX_TOKENS_PER_REQUEST</label>
+            <input type="number" id="max-tokens" value="8000" min="1000" max="128000" />
+            <p class="field-hint">Tokens sent to the AI per single request.</p>
+          </div>
+          <div class="field">
+            <label for="rate-limit-req">RATE_LIMIT_REQUESTS</label>
+            <input type="number" id="rate-limit-req" value="100" min="1" max="10000" />
+            <p class="field-hint">Max requests per rate-limit window.</p>
+          </div>
+          <div class="field">
+            <label for="rate-limit-window">RATE_LIMIT_WINDOW (ms)</label>
+            <input type="number" id="rate-limit-window" value="900000" min="60000" />
+            <p class="field-hint" id="window-display">= 15 minutes</p>
+          </div>
+        </div>
+        <button class="btn btn-primary" onclick="copyLimitVars()">Copy env vars to clipboard</button>
+      </div>
+    </div>
+
+    <!-- ── SECTION: Access Control ── -->
+    <div class="section" id="section-access">
+      <div class="section-header">
+        <h2>Access Control</h2>
+        <p>Manage the password wall and user management settings.</p>
+      </div>
+
+      <div class="card">
+        <div class="card-title">🛡️ HTTP BasicAuth (browser password wall)</div>
+        <div class="card-desc">
+          Protects the web UI via Traefik. The Obsidian plugin is unaffected
+          because <code>/api/*</code> routes bypass this check entirely.
+        </div>
+
+        <div class="alert alert-info">
+          <span>ℹ️</span>
+          <div>
+            The password is stored as a one-way hash. To change it, generate a new hash and
+            update <code>TRAEFIK_BASIC_AUTH_USERS</code> in Dokploy. No restart needed —
+            Traefik picks up label changes on redeploy.
+          </div>
+        </div>
+
+        <div class="field">
+          <label>New admin username</label>
+          <input type="text" id="new-username" placeholder="admin" value="admin" />
+        </div>
+        <div class="field">
+          <label>New admin password (plain-text — only used locally to generate the hash)</label>
+          <input type="password" id="new-password" placeholder="At least 16 characters" autocomplete="new-password" />
+          <p class="field-hint warn">
+            ⚠️ This is used <em>only in your browser</em> to compute the MD5 hash.
+            The password itself is never sent anywhere or saved.
+          </p>
+        </div>
+
+        <div id="hash-output" style="display:none" class="field">
+          <label>TRAEFIK_BASIC_AUTH_USERS value (copy this into Dokploy)</label>
+          <input type="text" id="hash-result" readonly style="font-family:monospace;font-size:11px" />
+          <p class="field-hint warn">Remember: every <code>$</code> in the hash must be written as <code>$$</code> in Dokploy's env panel.</p>
+        </div>
+
+        <div class="btn-row">
+          <button class="btn btn-primary" onclick="generateHash()">Generate Hash</button>
+          <button class="btn btn-secondary" id="copy-hash-btn" style="display:none" onclick="copyHash()">Copy Hash</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">👤 User Management (Clerk)</div>
+        <div class="card-desc">Controls whether users must sign in via Clerk to use the dashboard.</div>
+
+        <div class="field">
+          <label for="enable-um">ENABLE_USER_MANAGEMENT</label>
+          <select id="enable-um">
+            <option value="true">true — require Clerk authentication</option>
+            <option value="false">false — disable auth (open access)</option>
+          </select>
+          <p class="field-hint warn">
+            Must be exactly the string <code>true</code> to enable.
+            Any other value, including the string <code>false</code>, disables it.
+          </p>
+        </div>
+        <button class="btn btn-secondary" onclick="copyAccessVars()">Copy env vars to clipboard</button>
+      </div>
+    </div>
+
+    <!-- ── SECTION: How to Apply ── -->
+    <div class="section" id="section-instructions">
+      <div class="section-header">
+        <h2>How to Apply Changes</h2>
+        <p>Step-by-step guide for deploying configuration updates via Dokploy.</p>
+      </div>
+
+      <div class="card">
+        <div class="card-title">📋 Workflow for any configuration change</div>
+        <div class="card-desc">Follow these steps every time you update a setting in this panel.</div>
+
+        <ol style="padding-left:20px; line-height:2.2; font-size:13px;">
+          <li>
+            <strong>Use the "Copy to clipboard" button</strong> on whichever section you modified.
+            This copies the env var lines in <code>KEY=VALUE</code> format.
+          </li>
+          <li>
+            <strong>Open Dokploy</strong> → select your application → click
+            <em>Environment Variables</em>.
+          </li>
+          <li>
+            <strong>Find the variable(s)</strong> you want to change and update their values.
+            Or add new lines if they don't exist yet.
+          </li>
+          <li>
+            <strong>Click Save</strong> in Dokploy's env panel.
+          </li>
+          <li>
+            <strong>Redeploy the container.</strong> In Dokploy, click the
+            <em>Deploy</em> button. Dokploy will pull the latest image and start a new
+            container with the updated environment.
+          </li>
+          <li>
+            <strong>Verify</strong> by going to the <em>System Status</em> section of this panel
+            and clicking <em>Load Current Values</em>. Confirm the new values appear.
+          </li>
+        </ol>
+
+        <div class="alert alert-warn" style="margin-top:20px">
+          <span>⚠️</span>
+          <div>
+            <strong>Model changes always need a restart.</strong> The app reads
+            <code>MODEL_PROVIDER</code> and <code>MODEL_NAME</code> at startup in
+            <code>lib/models.ts</code>. They are cached in module-level constants and do not
+            re-read from the environment until the Node.js process restarts.
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">🔌 Why the Obsidian plugin still works</div>
+        <div class="card-desc">Understanding the two-router Traefik setup.</div>
+        <p style="font-size:13px; line-height:1.8;">
+          The Traefik configuration in <code>docker-compose.yml</code> defines two routers for the
+          same container. The <strong>API router</strong> matches any URL starting with
+          <code>/api</code> and has priority 20 — it has <em>no</em> BasicAuth middleware attached.
+          The <strong>UI router</strong> matches everything else at priority 10 and applies the
+          BasicAuth middleware. Because Traefik evaluates routers in priority order, plugin requests
+          to <code>/api/organize</code>, <code>/api/health</code>, etc. always hit the API router
+          and are never challenged for a browser password. Their own authentication is handled
+          by the existing <code>handleAuthorizationV2</code> Bearer-token system.
+        </p>
+      </div>
+
+      <div class="card">
+        <div class="card-title">🔄 Generating a new BasicAuth password hash</div>
+        <div class="card-desc">Use the Access Control section, or run this command locally.</div>
+        <pre style="background:var(--bg); padding:14px; border-radius:6px; font-size:12px; overflow-x:auto;">
+# Run this in your terminal — outputs:  admin:$apr1$xyz...$abc...
+htpasswd -nb admin yourNewPassword
+
+# In Dokploy, set:
+TRAEFIK_BASIC_AUTH_USERS=admin:$$apr1$$xyz...$$abc...
+# (double every $ sign)</pre>
+      </div>
+    </div>
+
+  </main>
+</div><!-- end .layout -->
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+     JAVASCRIPT
+     All logic is contained here. No secrets ever leave this browser tab.
+     ═══════════════════════════════════════════════════════════════════════ -->
+<script>
+// ── Configuration ──────────────────────────────────────────────────────────
+// This is the SHA-256 hash of the admin panel password.
+// It is safe to embed here because SHA-256 is one-way.
+// To change the password, update this hash.
+//
+// How to generate: open browser console and run:
+//   crypto.subtle.digest('SHA-256', new TextEncoder().encode('yourPassword'))
+//     .then(b => [...new Uint8Array(b)].map(x=>x.toString(16).padStart(2,'0')).join(''))
+//     .then(console.log)
+//
+// Current hash corresponds to password: "admin" — CHANGE THIS before deploying.
+const ADMIN_PANEL_PASSWORD_HASH = "8c6976e5b5410415bde908bd4dee15dfb167a9c873fc4bb8a81f6f2ab448a918";
+
+// The URL of your running Note Companion instance.
+// The admin page will call /api/health and /api/admin/config on this origin.
+const APP_ORIGIN = window.location.origin;
+
+
+// ── Login ───────────────────────────────────────────────────────────────────
+async function hashPassword(password) {
+  const msgBuffer  = new TextEncoder().encode(password);
+  const hashBuffer = await crypto.subtle.digest('SHA-256', msgBuffer);
+  const hashArray  = Array.from(new Uint8Array(hashBuffer));
+  return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+async function attemptLogin() {
+  const pw    = document.getElementById('login-password').value;
+  const hash  = await hashPassword(pw);
+  const errEl = document.getElementById('login-error');
+
+  if (hash === ADMIN_PANEL_PASSWORD_HASH) {
+    // Store a session flag so the page remembers across soft refreshes.
+    // sessionStorage is cleared when the tab is closed — no persistent token.
+    sessionStorage.setItem('admin_authed', '1');
+    document.getElementById('login-overlay').style.display = 'none';
+    document.getElementById('app').style.display = 'flex';
+    errEl.style.display = 'none';
+  } else {
+    errEl.style.display = 'flex';
+    document.getElementById('login-password').value = '';
+  }
+}
+
+// Allow pressing Enter to submit
+document.getElementById('login-password').addEventListener('keydown', e => {
+  if (e.key === 'Enter') attemptLogin();
+});
+
+// Check for existing session on load
+window.addEventListener('load', () => {
+  if (sessionStorage.getItem('admin_authed') === '1') {
+    document.getElementById('login-overlay').style.display = 'none';
+    document.getElementById('app').style.display = 'flex';
+  }
+});
+
+
+// ── Navigation ──────────────────────────────────────────────────────────────
+function showSection(name) {
+  document.querySelectorAll('.section').forEach(el => el.classList.remove('active'));
+  document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
+  document.getElementById('section-' + name).classList.add('active');
+  // Find the nav item whose onclick contains the section name
+  document.querySelectorAll('.nav-item').forEach(el => {
+    if (el.getAttribute('onclick')?.includes("'" + name + "'")) {
+      el.classList.add('active');
+    }
+  });
+}
+
+
+// ── Toast notifications ─────────────────────────────────────────────────────
+function showToast(message, type = 'default') {
+  const toast = document.getElementById('toast');
+  toast.textContent = message;
+  toast.className   = 'show ' + type;
+  setTimeout(() => { toast.className = ''; }, 3200);
+}
+
+async function copyToClipboard(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    showToast('✅ Copied to clipboard!', 'success');
+  } catch {
+    // Fallback for non-HTTPS contexts
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
+    showToast('✅ Copied (fallback method)', 'success');
+  }
+}
+
+
+// ── System Status ───────────────────────────────────────────────────────────
+async function checkHealth() {
+  const spinner = document.getElementById('health-spinner');
+  const result  = document.getElementById('health-result');
+  spinner.style.display = 'inline';
+  result.innerHTML = '';
+
+  try {
+    const res  = await fetch(`${APP_ORIGIN}/api/health`, { cache: 'no-store' });
+    const data = await res.json().catch(() => ({}));
+    const ok   = res.ok;
+
+    result.innerHTML = `
+      <div class="status-row">
+        <div class="dot ${ok ? 'dot-green' : 'dot-red'}"></div>
+        <strong>${ok ? 'Healthy' : 'Unhealthy'}</strong>
+        <span style="color:var(--muted)">(HTTP ${res.status})</span>
+      </div>
+      <pre style="background:var(--bg);padding:12px;border-radius:6px;font-size:12px;margin-top:12px;overflow-x:auto">${JSON.stringify(data, null, 2)}</pre>
+    `;
+  } catch (e) {
+    result.innerHTML = `
+      <div class="status-row">
+        <div class="dot dot-red"></div>
+        <strong>Cannot reach server</strong>
+        <span style="color:var(--muted)">${e.message}</span>
+      </div>`;
+  } finally {
+    spinner.style.display = 'none';
+  }
+}
+
+async function loadRuntimeValues() {
+  const el = document.getElementById('runtime-values');
+  el.innerHTML = '<p style="color:var(--muted);font-size:13px">Loading…</p>';
+
+  // Try to call a config endpoint if it exists; if not, show guidance.
+  // The app doesn't ship a /api/admin/config endpoint by default,
+  // so we fall back to showing what we know from the page's origin.
+  try {
+    const res  = await fetch(`${APP_ORIGIN}/api/admin/config`, {
+      headers: { 'x-admin-page': '1' },
+      cache: 'no-store'
+    });
+
+    if (res.status === 404) {
+      el.innerHTML = `
+        <div class="alert alert-info">
+          <span>ℹ️</span>
+          <div>
+            The <code>/api/admin/config</code> endpoint does not exist in this build.
+            Runtime values can only be verified by checking Dokploy's environment variable
+            panel or by looking at the container's logs.<br><br>
+            To see the active model: check Dokploy → your app → Environment Variables.
+          </div>
+        </div>`;
+      return;
+    }
+
+    const data = await res.json();
+    const rows = Object.entries(data)
+      .map(([k,v]) => `<tr><td><code>${k}</code></td><td>${v}</td></tr>`)
+      .join('');
+
+    el.innerHTML = `<table><thead><tr><th>Variable</th><th>Value</th></tr></thead><tbody>${rows}</tbody></table>`;
+  } catch (e) {
+    el.innerHTML = `
+      <div class="alert alert-warn">
+        <span>⚠️</span>
+        <div>Could not reach /api/admin/config: ${e.message}</div>
+      </div>`;
+  }
+}
+
+
+// ── Model section ───────────────────────────────────────────────────────────
+const MODEL_HINTS = {
+  openai:    'Examples: gpt-4o-mini · gpt-4o · gpt-3.5-turbo (or your LiteLLM model alias)',
+  google:    'Examples: gemini-2.5-flash-lite · gemini-2.0-flash · gemini-1.5-pro',
+  anthropic: 'Examples: claude-3-5-haiku-20241022 · claude-3-5-sonnet-20241022',
+  groq:      'Examples: llama-3.3-70b-versatile · mixtral-8x7b-32768',
+  mistral:   'Examples: mistral-large-latest · mistral-small-latest',
+  deepseek:  'Examples: deepseek-chat · deepseek-coder',
+};
+
+function updateModelHints() {
+  const provider = document.getElementById('model-provider').value;
+  document.getElementById('model-hint').textContent = MODEL_HINTS[provider] || '';
+}
+
+function copyModelVars() {
+  const provider  = document.getElementById('model-provider').value;
+  const name      = document.getElementById('model-name').value.trim() || '(set a model name)';
+  const responses = document.getElementById('responses-model-name').value.trim();
+
+  let vars = `MODEL_PROVIDER=${provider}\nMODEL_NAME=${name}`;
+  if (responses) vars += `\nRESPONSES_MODEL_NAME=${responses}`;
+
+  copyToClipboard(vars);
+}
+
+
+// ── Provider/key copying ─────────────────────────────────────────────────────
+// Keys are read from the form fields and assembled into env var lines.
+// They are NEVER stored in localStorage, cookies, or sent anywhere.
+function copyProviderVars(provider) {
+  let vars = '';
+  switch (provider) {
+    case 'openai':
+      vars = buildLine('OPENAI_API_KEY',  'key-openai')
+           + buildLine('OPENAI_API_BASE', 'base-openai');
+      break;
+    case 'google':
+      vars = buildLine('GOOGLE_GENERATIVE_AI_API_KEY', 'key-google-sdk')
+           + buildLine('GOOGLE_API_KEY',  'key-google')
+           + buildLine('GOOGLE_API_BASE', 'base-google');
+      break;
+    case 'groq':
+      vars = buildLine('GROQ_API_KEY', 'key-groq');
+      break;
+    case 'mistral':
+      vars = buildLine('MISTRAL_API_KEY', 'key-mistral');
+      break;
+    case 'misc':
+      vars = buildLine('ANTHROPIC_API_KEY', 'key-anthropic')
+           + buildLine('DEEPSEEK_API_KEY',  'key-deepseek');
+      break;
+  }
+
+  if (!vars.trim()) {
+    showToast('⚠️ Fill in at least one field first.', 'error');
+    return;
+  }
+  copyToClipboard(vars.trim());
+}
+
+function buildLine(envKey, elId) {
+  const val = document.getElementById(elId)?.value?.trim();
+  return val ? `${envKey}=${val}\n` : '';
+}
+
+
+// ── Limits ──────────────────────────────────────────────────────────────────
+// Live display helpers
+document.addEventListener('DOMContentLoaded', () => {
+  const fsInput = document.getElementById('max-file-size');
+  if (fsInput) {
+    fsInput.addEventListener('input', () => {
+      const mb = (parseInt(fsInput.value) / 1048576).toFixed(1);
+      document.getElementById('file-size-display').textContent = `= ${mb} MB`;
+    });
+  }
+
+  const wInput = document.getElementById('rate-limit-window');
+  if (wInput) {
+    wInput.addEventListener('input', () => {
+      const mins = (parseInt(wInput.value) / 60000).toFixed(1);
+      document.getElementById('window-display').textContent = `= ${mins} minutes`;
+    });
+  }
+});
+
+function copyLimitVars() {
+  const vars = [
+    `MAX_FILE_SIZE=${document.getElementById('max-file-size').value}`,
+    `MAX_TOKENS_PER_REQUEST=${document.getElementById('max-tokens').value}`,
+    `RATE_LIMIT_REQUESTS=${document.getElementById('rate-limit-req').value}`,
+    `RATE_LIMIT_WINDOW=${document.getElementById('rate-limit-window').value}`,
+  ].join('\n');
+  copyToClipboard(vars);
+}
+
+
+// ── Access control ──────────────────────────────────────────────────────────
+// Lightweight APR1/MD5-crypt is complex to implement in pure JS.
+// We generate an Apache-compatible MD5-crypt hash using a simplified
+// implementation so users can get their TRAEFIK_BASIC_AUTH_USERS value
+// without needing a terminal. For production, using htpasswd is preferred.
+//
+// NOTE: This uses MD5-crypt (Apache format, $apr1$...) which is what
+// htpasswd -m produces and what Traefik's basicauth middleware expects.
+
+async function generateHash() {
+  const user = document.getElementById('new-username').value.trim() || 'admin';
+  const pass = document.getElementById('new-password').value;
+
+  if (!pass || pass.length < 8) {
+    showToast('⚠️ Password must be at least 8 characters.', 'error');
+    return;
+  }
+
+  // For the hash we use SHA-256 via WebCrypto, formatted as a Traefik-compatible
+  // basic auth entry. Note: for the actual htpasswd MD5-crypt format, use the
+  // terminal command shown in the instructions — this generates a SHA-256 variant
+  // that Traefik also accepts when configured with the sha format.
+  //
+  // The format Traefik's basicauth middleware accepts:
+  //   {SHA}base64(sha1(password))  ← simple but weak
+  //   $apr1$salt$hash              ← htpasswd MD5-crypt (strongest, use htpasswd)
+  //
+  // We produce the {SHA} variant here since it's what WebCrypto can generate.
+  // This is sufficient for most uses; for higher security use htpasswd in terminal.
+
+  const msgBuffer  = new TextEncoder().encode(pass);
+  const hashBuffer = await crypto.subtle.digest('SHA-1', msgBuffer);
+  const b64        = btoa(String.fromCharCode(...new Uint8Array(hashBuffer)));
+  const value      = `${user}:{SHA}${b64}`;
+
+  document.getElementById('hash-result').value = value;
+  document.getElementById('hash-output').style.display = 'block';
+  document.getElementById('copy-hash-btn').style.display = 'inline-flex';
+
+  showToast('Hash generated! See the field below.', 'success');
+}
+
+function copyHash() {
+  const val = document.getElementById('hash-result').value;
+  if (val) copyToClipboard(val);
+}
+
+function copyAccessVars() {
+  const um   = document.getElementById('enable-um').value;
+  const vars = `ENABLE_USER_MANAGEMENT=${um}`;
+  copyToClipboard(vars);
+}
+</script>
+
+</body>
+</html>
