@@ -71,7 +71,7 @@ on:
       platforms:
         description: 'Target build platforms. Oracle Cloud = linux/amd64.'
         required: false
-        default: 'linux/amd64'
+        default: 'linux/arm64/v8'
         type: string
 
 env:
