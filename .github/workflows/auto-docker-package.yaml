@@ -1,0 +1,897 @@
+name: Detect, Build & Publish Package
+
+# =============================================================================
+# COMPREHENSIVE APPLICATION DETECTION + PUBLISHING WORKFLOW
+# =============================================================================
+#
+# This workflow is designed to be dropped into ANY repository and "just work".
+# It inspects the repository's file structure, identifies the application type,
+# selects the correct build strategy, and publishes a GitHub Package.
+#
+# ┌─────────────────────────────────────────────────────────────────────────┐
+# │  SUPPORTED APPLICATION PATTERNS (detected automatically)               │
+# ├─────────────────────────────────────────────────────────────────────────┤
+# │  TYPE A — Root Dockerfile                                               │
+# │    A Dockerfile exists at the repository root. The entire repo is the   │
+# │    build context. Example: note-companion-local.                        │
+# │                                                                         │
+# │  TYPE B — Monorepo sub-app Dockerfile                                   │
+# │    The application lives inside a subfolder (e.g. apps/server/) and     │
+# │    has its own Dockerfile. The folder may need a host-level pre-build   │
+# │    step (nx build, turbo build, pnpm build) before Docker can run.      │
+# │    Example: pezzolabs/pezzo apps/server.                                │
+# │                                                                         │
+# │  TYPE C — Explicit Dockerfile path (manual override)                    │
+# │    You provide an exact Dockerfile path via workflow input. Useful for  │
+# │    repos with multiple Dockerfiles or non-standard naming.              │
+# │                                                                         │
+# │  TYPE D — Pure Node.js / npm package (no Dockerfile)                   │
+# │    A package.json exists but no Dockerfile. The workflow builds the     │
+# │    JS/TS project and publishes it as an npm package to GitHub Packages. │
+# │    Examples: Vite apps, Next.js apps, CLI tools, libraries.             │
+# └─────────────────────────────────────────────────────────────────────────┘
+#
+# ┌─────────────────────────────────────────────────────────────────────────┐
+# │  VERSIONING BEHAVIOUR                                                   │
+# ├─────────────────────────────────────────────────────────────────────────┤
+# │  If you provide an explicit version input → it is used as-is.           │
+# │  If you do NOT provide a version → the workflow reads the current       │
+# │  version from the detected package.json and uses it WITHOUT bumping.    │
+# │  To bump the version, do it manually in package.json before pushing.   │
+# │                                                                         │
+# │  Commit message keywords still control git tag creation:               │
+# │    [skip ci]  → skip the entire workflow                                │
+# │    [no tag]   → run the build but do not create a git tag               │
+# └─────────────────────────────────────────────────────────────────────────┘
+#
+# ┌─────────────────────────────────────────────────────────────────────────┐
+# │  HOW TO USE IN A FORKED REPO (first-time setup)                        │
+# ├─────────────────────────────────────────────────────────────────────────┤
+# │  1. Copy this file to .github/workflows/publish.yml in your repo.      │
+# │  2. Go to Actions → "Detect, Build & Publish Package" → Run workflow.  │
+# │  3. Leave all inputs blank for auto-detection, OR fill in app_path      │
+# │     if you know your app lives in a subfolder (e.g. apps/server).      │
+# │  4. The workflow will print a full detection report before building.    │
+# │  5. After the first successful run, push triggers will work on their    │
+# │     own — you only need to run manually when overriding settings.       │
+# │                                                                         │
+# │  Required repository settings:                                         │
+# │    Settings → Actions → General → Workflow permissions:                │
+# │    → "Read and write permissions" (needed to push tags and packages)    │
+# └─────────────────────────────────────────────────────────────────────────┘
+
+on:
+  push:
+    branches:
+      - master
+      - main
+  workflow_dispatch:
+    inputs:
+      version:
+        description: |
+          Explicit version tag (e.g. v1.2.3).
+          If blank, the current package.json version is used without bumping.
+        required: false
+        type: string
+      app_path:
+        description: |
+          Override the app folder path (e.g. apps/server or packages/web).
+          Leave blank to let the workflow detect it automatically.
+        required: false
+        type: string
+      dockerfile_path:
+        description: |
+          Override the Dockerfile path (e.g. apps/server/Dockerfile).
+          Leave blank to let the workflow detect it automatically.
+        required: false
+        type: string
+      tag_latest:
+        description: 'Also tag the Docker image as :latest?'
+        required: false
+        default: 'true'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+      platforms:
+        description: |
+          Docker build target platforms (comma-separated).
+          Default is linux/arm64/v8 for ARM servers.
+          Use linux/amd64 for x86 (Oracle Cloud, most VPS providers).
+          Use linux/amd64,linux/arm64 for multi-arch.
+        required: false
+        default: 'linux/arm64/v8'
+        type: string
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+# contents: write  — needed to create git tags
+# packages: write  — needed to push to ghcr.io and GitHub npm registry
+# attestations: write + id-token: write — needed for SLSA provenance signing
+permissions:
+  contents: write
+  packages: write
+  attestations: write
+  id-token: write
+
+jobs:
+
+  # ============================================================================
+  # JOB 1 — DETECT
+  # This is the "detective" job. It examines the repository and produces a
+  # structured report of what it found, which all subsequent jobs consume.
+  # Running detection as a separate job means the results are visible in the
+  # Actions UI before any building starts — great for debugging forks.
+  # ============================================================================
+  detect:
+    name: Detect application type & structure
+    runs-on: ubuntu-latest
+
+    # Skip entirely if the commit message says so.
+    if: |
+      !contains(github.event.head_commit.message, '[skip ci]')
+
+    outputs:
+      # The primary application type. One of:
+      #   docker-root        — Dockerfile at repo root
+      #   docker-subapp      — Dockerfile inside a subfolder
+      #   docker-explicit    — user-provided Dockerfile path
+      #   nodejs-package     — package.json only, no Dockerfile
+      #   unknown            — nothing recognisable found (build will fail)
+      app_type:         ${{ steps.detect.outputs.app_type }}
+
+      # Absolute paths (relative to workspace root) for use in later jobs.
+      app_path:         ${{ steps.detect.outputs.app_path }}
+      dockerfile_path:  ${{ steps.detect.outputs.dockerfile_path }}
+      build_context:    ${{ steps.detect.outputs.build_context }}
+      package_json:     ${{ steps.detect.outputs.package_json }}
+
+      # Whether a pre-build step is needed before Docker can run.
+      # True for monorepos where the Dockerfile COPYs from a ./dist folder
+      # that must be generated by a host-level build tool first.
+      needs_prebuild:   ${{ steps.detect.outputs.needs_prebuild }}
+      prebuild_cmd:     ${{ steps.detect.outputs.prebuild_cmd }}
+
+      # The detected or overridden version string (with v prefix).
+      version:          ${{ steps.detect.outputs.version }}
+
+      # Whether this is a Node.js project at all (has package.json).
+      has_node:         ${{ steps.detect.outputs.has_node }}
+
+      # The package manager to use (npm / pnpm / yarn).
+      pkg_manager:      ${{ steps.detect.outputs.pkg_manager }}
+
+    steps:
+      - name: Checkout repository (full history for tag detection)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js (needed to read package.json in this job)
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # -----------------------------------------------------------------------
+      # THE DETECTION STEP
+      # This is the heart of the workflow. It examines the repo file-by-file
+      # and sets output variables that all later jobs use to make decisions.
+      #
+      # Detection priority order (from most specific to least specific):
+      #   1. Explicit user overrides (dockerfile_path / app_path inputs)
+      #   2. Monorepo sub-app (apps/*, packages/*, services/*)
+      #   3. Root-level Dockerfile
+      #   4. Root-level package.json (pure Node.js, no Docker)
+      #   5. Unknown → fail with instructions
+      # -----------------------------------------------------------------------
+      - name: Detect application structure
+        id: detect
+        shell: bash
+        run: |
+          echo "============================================================"
+          echo "  APPLICATION DETECTION REPORT"
+          echo "============================================================"
+
+          # ------------------------------------------------------------------
+          # STEP 1: Collect user overrides (from workflow_dispatch inputs).
+          # These take absolute priority over auto-detection.
+          # ------------------------------------------------------------------
+          INPUT_APP_PATH="${{ github.event.inputs.app_path }}"
+          INPUT_DOCKERFILE="${{ github.event.inputs.dockerfile_path }}"
+          INPUT_VERSION="${{ github.event.inputs.version }}"
+
+          # ------------------------------------------------------------------
+          # STEP 2: Scan the repository for structural clues.
+          # We build a picture of what exists before making any decisions.
+          # ------------------------------------------------------------------
+          echo ""
+          echo "--- Repository scan ---"
+
+          HAS_ROOT_DOCKERFILE=false
+          HAS_ROOT_PACKAGE_JSON=false
+          HAS_ROOT_PNPM_LOCK=false
+          HAS_ROOT_YARN_LOCK=false
+          MONOREPO_APP_PATH=""
+          MONOREPO_DOCKERFILE=""
+
+          [ -f "Dockerfile" ]      && HAS_ROOT_DOCKERFILE=true    && echo "  ✓ Found: Dockerfile (root)"
+          [ -f "package.json" ]    && HAS_ROOT_PACKAGE_JSON=true   && echo "  ✓ Found: package.json (root)"
+          [ -f "pnpm-lock.yaml" ]  && HAS_ROOT_PNPM_LOCK=true     && echo "  ✓ Found: pnpm-lock.yaml (root)"
+          [ -f "yarn.lock" ]       && HAS_ROOT_YARN_LOCK=true      && echo "  ✓ Found: yarn.lock (root)"
+          [ -f "pnpm-workspace.yaml" ] && echo "  ✓ Found: pnpm-workspace.yaml (monorepo indicator)"
+          [ -f "nx.json" ]             && echo "  ✓ Found: nx.json (Nx monorepo)"
+          [ -f "turbo.json" ]          && echo "  ✓ Found: turbo.json (Turborepo)"
+
+          # Scan common monorepo sub-app locations for Dockerfiles.
+          # We search apps/, packages/, services/, and src/ up to 2 levels deep.
+          echo ""
+          echo "--- Scanning for sub-app Dockerfiles ---"
+          while IFS= read -r -d $'\0' df; do
+            dir="$(dirname "$df")"
+            echo "  ✓ Found sub-app Dockerfile: $df (app folder: $dir)"
+            # Take the first one found if no explicit override was given.
+            if [[ -z "$MONOREPO_DOCKERFILE" ]]; then
+              MONOREPO_APP_PATH="$dir"
+              MONOREPO_DOCKERFILE="$df"
+            fi
+          done < <(find apps packages services src \
+            -maxdepth 3 \
+            -name "Dockerfile" \
+            -print0 2>/dev/null)
+
+          # ------------------------------------------------------------------
+          # STEP 3: Detect the package manager.
+          # This determines how we install dependencies and run build scripts.
+          # ------------------------------------------------------------------
+          PKG_MANAGER="npm"
+          if $HAS_ROOT_PNPM_LOCK || [ -f "pnpm-workspace.yaml" ]; then
+            PKG_MANAGER="pnpm"
+          elif $HAS_ROOT_YARN_LOCK; then
+            PKG_MANAGER="yarn"
+          fi
+          echo ""
+          echo "  Package manager: $PKG_MANAGER"
+
+          # ------------------------------------------------------------------
+          # STEP 4: Determine the application type using the priority order.
+          # ------------------------------------------------------------------
+          echo ""
+          echo "--- Resolving application type ---"
+
+          APP_TYPE="unknown"
+          APP_PATH="."
+          DOCKERFILE_PATH=""
+          BUILD_CONTEXT="."
+          PACKAGE_JSON=""
+          NEEDS_PREBUILD=false
+          PREBUILD_CMD=""
+
+          if [[ -n "$INPUT_DOCKERFILE" ]]; then
+            # ── CASE 1: User explicitly provided a Dockerfile path ──────────
+            APP_TYPE="docker-explicit"
+            DOCKERFILE_PATH="$INPUT_DOCKERFILE"
+            # Build context defaults to the directory containing the Dockerfile
+            # unless the user also provided app_path.
+            if [[ -n "$INPUT_APP_PATH" ]]; then
+              BUILD_CONTEXT="$INPUT_APP_PATH"
+              APP_PATH="$INPUT_APP_PATH"
+            else
+              BUILD_CONTEXT="$(dirname "$INPUT_DOCKERFILE")"
+              APP_PATH="$(dirname "$INPUT_DOCKERFILE")"
+            fi
+            echo "  → TYPE: docker-explicit (user override)"
+            echo "    Dockerfile: $DOCKERFILE_PATH"
+            echo "    Build context: $BUILD_CONTEXT"
+
+          elif [[ -n "$INPUT_APP_PATH" ]] && [[ -f "$INPUT_APP_PATH/Dockerfile" ]]; then
+            # ── CASE 2: User provided an app path that has a Dockerfile ─────
+            APP_TYPE="docker-subapp"
+            APP_PATH="$INPUT_APP_PATH"
+            DOCKERFILE_PATH="$INPUT_APP_PATH/Dockerfile"
+            BUILD_CONTEXT="$INPUT_APP_PATH"
+            echo "  → TYPE: docker-subapp (user-specified app path)"
+            echo "    App path: $APP_PATH"
+
+          elif [[ -n "$INPUT_APP_PATH" ]] && $HAS_ROOT_DOCKERFILE; then
+            # ── CASE 3: User provided an app path, Dockerfile is at root ────
+            # This happens in repos where the Dockerfile at root COPYs from
+            # a built dist/ that was generated from a specific sub-package.
+            APP_TYPE="docker-root"
+            APP_PATH="$INPUT_APP_PATH"
+            DOCKERFILE_PATH="Dockerfile"
+            BUILD_CONTEXT="."
+            echo "  → TYPE: docker-root (user-specified app path, root Dockerfile)"
+
+          elif [[ -n "$MONOREPO_DOCKERFILE" ]]; then
+            # ── CASE 4: Auto-detected sub-app with Dockerfile (monorepo) ────
+            APP_TYPE="docker-subapp"
+            APP_PATH="$MONOREPO_APP_PATH"
+            DOCKERFILE_PATH="$MONOREPO_DOCKERFILE"
+            BUILD_CONTEXT="$MONOREPO_APP_PATH"
+            echo "  → TYPE: docker-subapp (auto-detected monorepo)"
+            echo "    App path: $APP_PATH"
+            echo "    Dockerfile: $DOCKERFILE_PATH"
+
+            # Check if this looks like a Nx/Turborepo app that needs a
+            # host-level pre-build. We check whether the Dockerfile references
+            # a ./dist folder (common pattern: COPY ./dist/apps/server .)
+            if grep -q 'dist/' "$DOCKERFILE_PATH" 2>/dev/null; then
+              NEEDS_PREBUILD=true
+              # Determine the pre-build command based on what build tool exists.
+              APP_NAME=$(basename "$APP_PATH")
+              if [ -f "nx.json" ]; then
+                PREBUILD_CMD="npx nx build $APP_NAME --prod"
+              elif [ -f "turbo.json" ]; then
+                PREBUILD_CMD="npx turbo run build --filter=$APP_NAME"
+              else
+                PREBUILD_CMD="$PKG_MANAGER run build"
+              fi
+              echo "    Pre-build required: $PREBUILD_CMD"
+            fi
+
+          elif $HAS_ROOT_DOCKERFILE; then
+            # ── CASE 5: Simple root Dockerfile ──────────────────────────────
+            APP_TYPE="docker-root"
+            APP_PATH="."
+            DOCKERFILE_PATH="Dockerfile"
+            BUILD_CONTEXT="."
+            echo "  → TYPE: docker-root (auto-detected)"
+
+            # Check if this is a monorepo root Dockerfile that references a
+            # specific sub-package (e.g. note-companion: WORKDIR /app/packages/web)
+            # In that case, find the package.json in that sub-package.
+            INNER_PKG=$(grep -oP 'WORKDIR\s+/app/\K[^\s]+' Dockerfile 2>/dev/null | head -1 || true)
+            if [[ -n "$INNER_PKG" ]] && [[ -f "$INNER_PKG/package.json" ]]; then
+              APP_PATH="$INNER_PKG"
+              echo "    Inner app path (from Dockerfile WORKDIR): $APP_PATH"
+            fi
+
+          elif $HAS_ROOT_PACKAGE_JSON; then
+            # ── CASE 6: Pure Node.js — no Dockerfile anywhere ───────────────
+            APP_TYPE="nodejs-package"
+            APP_PATH="."
+            DOCKERFILE_PATH=""
+            BUILD_CONTEXT="."
+            echo "  → TYPE: nodejs-package (no Dockerfile found)"
+
+          else
+            # ── CASE 7: Nothing recognisable ────────────────────────────────
+            echo "  → TYPE: unknown"
+            echo ""
+            echo "  ERROR: Could not detect application type."
+            echo "  The workflow looked for:"
+            echo "    - Dockerfile at repository root"
+            echo "    - Dockerfile inside apps/, packages/, services/, src/"
+            echo "    - package.json at repository root"
+            echo ""
+            echo "  To fix this, re-run the workflow with the 'app_path' input"
+            echo "  set to the folder containing your application, e.g:"
+            echo "    app_path: apps/my-server"
+          fi
+
+          # ------------------------------------------------------------------
+          # STEP 5: Locate the canonical package.json for version reading.
+          # We prefer the package.json closest to the actual app code.
+          # ------------------------------------------------------------------
+          if [[ "$APP_PATH" != "." ]] && [[ -f "$APP_PATH/package.json" ]]; then
+            PACKAGE_JSON="$APP_PATH/package.json"
+          elif $HAS_ROOT_PACKAGE_JSON; then
+            PACKAGE_JSON="package.json"
+          fi
+          echo "  Package.json: ${PACKAGE_JSON:-none found}"
+
+          # ------------------------------------------------------------------
+          # STEP 6: Resolve the version to use.
+          # Priority: explicit input > package.json version > fallback 0.1.0
+          # ------------------------------------------------------------------
+          if [[ -n "$INPUT_VERSION" ]]; then
+            # User explicitly provided a version — validate and use it.
+            VERSION="$INPUT_VERSION"
+            # Add 'v' prefix if user omitted it (e.g. "1.2.3" → "v1.2.3")
+            [[ "$VERSION" != v* ]] && VERSION="v$VERSION"
+            echo "  Version: $VERSION (from workflow input)"
+          elif [[ -n "$PACKAGE_JSON" ]]; then
+            # Read from package.json — no bumping, just reading what's there.
+            RAW_VERSION=$(node -p "require('./$PACKAGE_JSON').version" 2>/dev/null || echo "")
+            if [[ -n "$RAW_VERSION" ]]; then
+              VERSION="v$RAW_VERSION"
+              echo "  Version: $VERSION (read from $PACKAGE_JSON)"
+            else
+              VERSION="v0.1.0"
+              echo "  Version: $VERSION (fallback — could not read package.json)"
+            fi
+          else
+            VERSION="v0.1.0"
+            echo "  Version: $VERSION (fallback — no package.json found)"
+          fi
+
+          # Validate the final version string is proper semver.
+          if [[ ! "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-+][A-Za-z0-9._-]+)?$ ]]; then
+            echo "::error::Resolved version '$VERSION' is not valid semver."
+            exit 1
+          fi
+
+          # ------------------------------------------------------------------
+          # STEP 7: Set all outputs so downstream jobs can use them.
+          # ------------------------------------------------------------------
+          echo ""
+          echo "============================================================"
+          echo "  DETECTION SUMMARY"
+          echo "============================================================"
+          echo "  App type:       $APP_TYPE"
+          echo "  App path:       $APP_PATH"
+          echo "  Dockerfile:     ${DOCKERFILE_PATH:-n/a}"
+          echo "  Build context:  $BUILD_CONTEXT"
+          echo "  Package.json:   ${PACKAGE_JSON:-n/a}"
+          echo "  Needs prebuild: $NEEDS_PREBUILD"
+          echo "  Prebuild cmd:   ${PREBUILD_CMD:-n/a}"
+          echo "  Version:        $VERSION"
+          echo "  Pkg manager:    $PKG_MANAGER"
+          echo "  Has Node:       $HAS_ROOT_PACKAGE_JSON"
+          echo "============================================================"
+
+          # Write outputs using the modern Environment Files approach
+          # (not the deprecated ::set-output:: command).
+          {
+            echo "app_type=$APP_TYPE"
+            echo "app_path=$APP_PATH"
+            echo "dockerfile_path=$DOCKERFILE_PATH"
+            echo "build_context=$BUILD_CONTEXT"
+            echo "package_json=$PACKAGE_JSON"
+            echo "needs_prebuild=$NEEDS_PREBUILD"
+            echo "prebuild_cmd=$PREBUILD_CMD"
+            echo "version=$VERSION"
+            echo "has_node=$HAS_ROOT_PACKAGE_JSON"
+            echo "pkg_manager=$PKG_MANAGER"
+          } >> "$GITHUB_OUTPUT"
+
+          # Fail the detect job (and therefore the whole workflow) if nothing
+          # was found. We do this AFTER writing outputs so the summary above
+          # is always printed regardless.
+          if [[ "$APP_TYPE" == "unknown" ]]; then
+            echo "::error::Application type could not be determined. See detection report above."
+            exit 1
+          fi
+
+
+  # ============================================================================
+  # JOB 2 — BUILD AND PUBLISH (DOCKER)
+  # Runs for all Docker-based application types:
+  #   docker-root, docker-subapp, docker-explicit
+  # ============================================================================
+  docker-publish:
+    name: Build & publish Docker image → ghcr.io
+    runs-on: ubuntu-latest
+    needs: detect
+
+    # Only run this job for Docker-based app types.
+    if: |
+      needs.detect.outputs.app_type == 'docker-root' ||
+      needs.detect.outputs.app_type == 'docker-subapp' ||
+      needs.detect.outputs.app_type == 'docker-explicit'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      # -----------------------------------------------------------------------
+      # Node.js setup — only needed when a monorepo pre-build step is required.
+      # We install it unconditionally anyway because setup-node is fast and
+      # skipping it conditionally adds complexity without meaningful savings.
+      # -----------------------------------------------------------------------
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install pnpm (if repo uses it)
+        if: needs.detect.outputs.pkg_manager == 'pnpm'
+        run: npm install -g pnpm@9
+
+      - name: Install yarn (if repo uses it)
+        if: needs.detect.outputs.pkg_manager == 'yarn'
+        run: npm install -g yarn
+
+      # -----------------------------------------------------------------------
+      # PRE-BUILD STEP (monorepo sub-apps only)
+      # Runs ONLY when the detection job set needs_prebuild=true.
+      # This handles the Pezzo/Nx pattern where the Dockerfile COPYs from
+      # a ./dist/apps/server folder that must be generated first.
+      #
+      # Why this must run before Docker?
+      # The Dockerfile does COPY ./dist/apps/server . which means Docker
+      # expects that folder to exist ON THE HOST (the runner machine) at
+      # build time. If we skip this, Docker throws "COPY failed: file not found".
+      # -----------------------------------------------------------------------
+      - name: Install monorepo dependencies (pre-build)
+        if: needs.detect.outputs.needs_prebuild == 'true'
+        shell: bash
+        run: |
+          echo "Installing workspace dependencies before pre-build..."
+          PKG="${{ needs.detect.outputs.pkg_manager }}"
+          case "$PKG" in
+            pnpm) pnpm install --frozen-lockfile ;;
+            yarn) yarn install --frozen-lockfile ;;
+            *)    npm ci ;;
+          esac
+
+      - name: Run pre-build step (generate dist/ for Docker)
+        if: needs.detect.outputs.needs_prebuild == 'true'
+        shell: bash
+        run: |
+          echo "Running pre-build: ${{ needs.detect.outputs.prebuild_cmd }}"
+          eval "${{ needs.detect.outputs.prebuild_cmd }}"
+
+      # -----------------------------------------------------------------------
+      # Fix "exec format error" for shell scripts.
+      # See earlier workflow versions for full explanation. TL;DR: Windows
+      # \r\n line endings in a shebang line cause Linux to reject the script.
+      # -----------------------------------------------------------------------
+      - name: Normalize shell scripts (fix exec format error)
+        shell: bash
+        run: |
+          while IFS= read -r -d $'\0' f; do
+            sed -i 's/\r$//' "$f" || true
+            chmod +x "$f" || true
+            echo "  Normalized: $f"
+          done < <(find . -not -path './.git/*' -type f \
+            \( -name '*.sh' -o -name 'entrypoint' -o -name 'docker-entrypoint*' \) \
+            -print0)
+
+      # -----------------------------------------------------------------------
+      # QEMU + Buildx setup.
+      # QEMU is required when building for a platform different from the
+      # runner's native arch. GitHub Actions runners are x86-64 (amd64).
+      # If the target platform is linux/arm64/v8 (the default here), QEMU
+      # provides software emulation so Docker can produce ARM64 binaries.
+      # This makes the build slower than native but produces correct images.
+      # -----------------------------------------------------------------------
+      - name: Set up QEMU (for cross-platform builds)
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          # GITHUB_TOKEN is automatically available — no manual secret needed.
+          # It is scoped to the repository and expires after the workflow run.
+          # NEVER hardcode a personal access token here.
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # -----------------------------------------------------------------------
+      # Compute tags and OCI-standard labels.
+      # OCI labels are the standard way to embed metadata into an image — they
+      # show up in the GitHub Packages UI and tools like Trivy, Cosign, etc.
+      # -----------------------------------------------------------------------
+      - name: Extract metadata (tags & OCI labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=${{ needs.detect.outputs.version }}
+            type=raw,value=latest,enable=${{ github.event.inputs.tag_latest != 'false' }}
+
+      - name: Show resolved build parameters
+        run: |
+          echo "App type:      ${{ needs.detect.outputs.app_type }}"
+          echo "Dockerfile:    ${{ needs.detect.outputs.dockerfile_path }}"
+          echo "Build context: ${{ needs.detect.outputs.build_context }}"
+          echo "Version:       ${{ needs.detect.outputs.version }}"
+          echo "Platforms:     ${{ github.event.inputs.platforms || 'linux/arm64/v8' }}"
+          printf "Tags:\n%s\n" "${{ steps.meta.outputs.tags }}"
+
+      # -----------------------------------------------------------------------
+      # BUILD AND PUSH WITH RETRY
+      #
+      # All the hard-won lessons from previous failures are preserved here:
+      #
+      # 1. Bash arrays for flags (not sed/tr pipelines): fixes "requires 1
+      #    argument" error caused by the build context '.' being eaten by
+      #    string manipulation.
+      #
+      # 2. Retry loop with exponential back-off: fixes transient ghcr.io 502
+      #    "Unicorn" errors. On retry, the GHA cache restores built layers
+      #    so only the failed push is repeated, not the full 5-minute build.
+      #
+      # 3. provenance=false: prevents docker/build-push-action from pushing
+      #    a second manifest that confuses older runtimes (Dokploy, Portainer).
+      #    We generate our own clean attestation in the explicit step below.
+      #
+      # 4. The Dockerfile path is taken from the detect job output, not
+      #    hardcoded — this is what makes the workflow universal.
+      # -----------------------------------------------------------------------
+      - name: Build and push Docker image (with retry)
+        id: push
+        shell: bash
+        env:
+          TAGS:        ${{ steps.meta.outputs.tags }}
+          LABELS:      ${{ steps.meta.outputs.labels }}
+          PLATFORMS:   ${{ github.event.inputs.platforms || 'linux/arm64/v8' }}
+          DOCKERFILE:  ${{ needs.detect.outputs.dockerfile_path }}
+          CTX:         ${{ needs.detect.outputs.build_context }}
+        run: |
+          MAX_ATTEMPTS=3
+          DELAY=30
+
+          # Build the --tag and --label arrays from multiline env vars.
+          # Each line becomes a separate array element — safe with any tag value.
+          TAG_ARGS=()
+          while IFS= read -r tag; do
+            [[ -z "$tag" ]] && continue
+            TAG_ARGS+=(--tag "$tag")
+          done <<< "$TAGS"
+
+          LABEL_ARGS=()
+          while IFS= read -r label; do
+            [[ -z "$label" ]] && continue
+            LABEL_ARGS+=(--label "$label")
+          done <<< "$LABELS"
+
+          for attempt in $(seq 1 $MAX_ATTEMPTS); do
+            echo "::group::Build & push attempt $attempt of $MAX_ATTEMPTS"
+
+            if docker buildx build \
+                --platform   "$PLATFORMS" \
+                --file       "$DOCKERFILE" \
+                --provenance false \
+                --cache-from type=gha \
+                --cache-to   "type=gha,mode=max" \
+                --push \
+                "${TAG_ARGS[@]}" \
+                "${LABEL_ARGS[@]}" \
+                "$CTX" 2>&1 | tee /tmp/build_output.txt; then
+
+              echo "::endgroup::"
+              echo "Push succeeded on attempt $attempt."
+
+              # Extract digest for the attestation step.
+              DIGEST=$(grep -oP '(?<=digest: )sha256:[a-f0-9]{64}' /tmp/build_output.txt \
+                       | tail -1 || true)
+              [[ -z "$DIGEST" ]] && \
+                DIGEST=$(grep -oP 'sha256:[a-f0-9]{64}' /tmp/build_output.txt | tail -1 || true)
+              echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+
+            echo "::endgroup::"
+            echo "::warning::Attempt $attempt failed."
+
+            if [ "$attempt" -lt "$MAX_ATTEMPTS" ]; then
+              echo "Waiting ${DELAY}s before next attempt (exponential back-off)..."
+              sleep "$DELAY"
+              DELAY=$((DELAY * 2))
+            fi
+          done
+
+          echo "::error::All $MAX_ATTEMPTS push attempts failed. Check https://githubstatus.com"
+          exit 1
+
+      # -----------------------------------------------------------------------
+      # CREATE GIT TAG (idempotent — safe to re-run if tag already exists)
+      # We check existence before creating so that re-running the workflow
+      # on the same commit (e.g. after a transient failure) doesn't crash
+      # with "Reference already exists".
+      # -----------------------------------------------------------------------
+      - name: Configure git identity
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Create and push git tag (idempotent)
+        if: |
+          !contains(github.event.head_commit.message, '[no tag]')
+        shell: bash
+        run: |
+          VERSION="${{ needs.detect.outputs.version }}"
+          git fetch --tags
+
+          if git rev-parse "$VERSION" >/dev/null 2>&1; then
+            echo "Tag $VERSION already exists — skipping creation (idempotent)."
+          else
+            git tag -a "$VERSION" -m "Release $VERSION"
+            git push origin "$VERSION"
+            echo "Created and pushed tag: $VERSION"
+          fi
+
+      - name: Generate artifact attestation
+        if: steps.push.outputs.digest != ''
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+
+      - name: Write job summary
+        if: steps.push.outputs.digest != ''
+        run: |
+          echo "## Docker package published to ghcr.io" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Field | Value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| **App type** | \`${{ needs.detect.outputs.app_type }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| **Version** | \`${{ needs.detect.outputs.version }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| **Dockerfile** | \`${{ needs.detect.outputs.dockerfile_path }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| **Platforms** | \`${{ github.event.inputs.platforms || 'linux/arm64/v8' }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| **Digest** | \`${{ steps.push.outputs.digest }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| **Trigger** | \`${{ github.event_name }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Pull command" >> "$GITHUB_STEP_SUMMARY"
+          echo "\`\`\`bash" >> "$GITHUB_STEP_SUMMARY"
+          echo "docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.detect.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "\`\`\`" >> "$GITHUB_STEP_SUMMARY"
+
+
+  # ============================================================================
+  # JOB 3 — BUILD AND PUBLISH (NODE.JS PACKAGE)
+  # Runs ONLY for TYPE D: pure Node.js projects with no Dockerfile.
+  # Publishes the built package to the GitHub npm registry (packages.github.com)
+  # so it can be installed with: npm install @owner/package-name
+  # ============================================================================
+  nodejs-publish:
+    name: Build & publish npm package → GitHub Packages
+    runs-on: ubuntu-latest
+    needs: detect
+
+    if: needs.detect.outputs.app_type == 'nodejs-package'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      # Point Node.js at the GitHub npm registry for this scope.
+      # The registry-url is required for npm publish to work with GITHUB_TOKEN.
+      # The scope (@owner) must match the package name in package.json.
+      - name: Set up Node.js with GitHub Packages registry
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://npm.pkg.github.com'
+          scope: '@${{ github.repository_owner }}'
+
+      - name: Install pnpm (if repo uses it)
+        if: needs.detect.outputs.pkg_manager == 'pnpm'
+        run: npm install -g pnpm@9
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          PKG="${{ needs.detect.outputs.pkg_manager }}"
+          APP="${{ needs.detect.outputs.app_path }}"
+          cd "$APP"
+          case "$PKG" in
+            pnpm) pnpm install --frozen-lockfile ;;
+            yarn) yarn install --frozen-lockfile ;;
+            *)    npm ci ;;
+          esac
+
+      # Run the build script if one exists. Many JS projects (Next.js, Vite,
+      # TypeScript) need a build step before the output can be published.
+      # We check for the 'build' script first to avoid erroring on projects
+      # that have no build step (e.g. a plain JS utility library).
+      - name: Build project
+        shell: bash
+        run: |
+          APP="${{ needs.detect.outputs.app_path }}"
+          PKG="${{ needs.detect.outputs.pkg_manager }}"
+          cd "$APP"
+
+          if node -e "const p=require('./package.json'); process.exit(p.scripts&&p.scripts.build?0:1)" 2>/dev/null; then
+            echo "Found 'build' script — running it..."
+            case "$PKG" in
+              pnpm) pnpm run build ;;
+              yarn) yarn build ;;
+              *)    npm run build ;;
+            esac
+          else
+            echo "No 'build' script found in package.json — skipping build step."
+          fi
+
+      # Ensure the package name in package.json is scoped to the GitHub owner.
+      # GitHub Packages requires scoped package names: @owner/package-name.
+      # If the name is already scoped, this is a no-op.
+      - name: Ensure package name is scoped for GitHub Packages
+        shell: bash
+        run: |
+          APP="${{ needs.detect.outputs.app_path }}"
+          cd "$APP"
+
+          OWNER="${{ github.repository_owner }}"
+          CURRENT_NAME=$(node -p "require('./package.json').name" 2>/dev/null || echo "")
+          echo "Current package name: $CURRENT_NAME"
+
+          if [[ "$CURRENT_NAME" != @* ]]; then
+            NEW_NAME="@${OWNER}/${CURRENT_NAME}"
+            echo "Scoping package name to: $NEW_NAME"
+            # Use node to safely rewrite the JSON (preserves formatting better
+            # than sed, which can corrupt JSON with special characters in values).
+            node -e "
+              const fs = require('fs');
+              const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+              pkg.name = '$NEW_NAME';
+              fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
+            "
+          else
+            echo "Package name is already scoped: $CURRENT_NAME"
+          fi
+
+      # Update the version in package.json to match the detected/input version.
+      - name: Set version in package.json
+        shell: bash
+        run: |
+          APP="${{ needs.detect.outputs.app_path }}"
+          VERSION="${{ needs.detect.outputs.version }}"
+          # Strip the 'v' prefix — npm expects bare semver (1.2.3 not v1.2.3)
+          VERSION_BARE="${VERSION#v}"
+          cd "$APP"
+          npm version "$VERSION_BARE" --no-git-tag-version --allow-same-version
+          echo "Set package.json version to: $VERSION_BARE"
+
+      - name: Publish npm package to GitHub Packages
+        shell: bash
+        env:
+          # NODE_AUTH_TOKEN is the variable name that npm looks for when
+          # authenticating to the registry set in setup-node.
+          # NEVER hardcode a token — always use secrets.
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          APP="${{ needs.detect.outputs.app_path }}"
+          PKG="${{ needs.detect.outputs.pkg_manager }}"
+          cd "$APP"
+
+          # --access public is required for scoped packages on free GitHub plans.
+          # On private repositories, omit this flag.
+          case "$PKG" in
+            pnpm) pnpm publish --access public --no-git-checks ;;
+            yarn) yarn publish --access public ;;
+            *)    npm publish --access public ;;
+          esac
+
+      - name: Configure git identity
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Create and push git tag (idempotent)
+        if: |
+          !contains(github.event.head_commit.message, '[no tag]')
+        shell: bash
+        run: |
+          VERSION="${{ needs.detect.outputs.version }}"
+          git fetch --tags
+
+          if git rev-parse "$VERSION" >/dev/null 2>&1; then
+            echo "Tag $VERSION already exists — skipping (idempotent)."
+          else
+            git tag -a "$VERSION" -m "Release $VERSION"
+            git push origin "$VERSION"
+            echo "Created and pushed tag: $VERSION"
+          fi
+
+      - name: Write job summary
+        run: |
+          echo "## npm package published to GitHub Packages" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Field | Value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| **App type** | \`${{ needs.detect.outputs.app_type }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| **Version** | \`${{ needs.detect.outputs.version }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| **Package manager** | \`${{ needs.detect.outputs.pkg_manager }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| **Trigger** | \`${{ github.event_name }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Install command" >> "$GITHUB_STEP_SUMMARY"
+          echo "\`\`\`bash" >> "$GITHUB_STEP_SUMMARY"
+          echo "npm install @${{ github.repository_owner }}/$(node -p \"require('${{ needs.detect.outputs.app_path }}/package.json').name.split('/').pop()\")" >> "$GITHUB_STEP_SUMMARY"
+          echo "\`\`\`" >> "$GITHUB_STEP_SUMMARY"
