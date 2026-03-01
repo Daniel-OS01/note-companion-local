@@ -247,4 +247,3 @@ jobs:
           echo "\`\`\`bash" >> "$GITHUB_STEP_SUMMARY"
           echo "docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.validate.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
           echo "\`\`\`" >> "$GITHUB_STEP_SUMMARY"
-
