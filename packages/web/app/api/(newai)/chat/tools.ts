@@ -321,6 +321,27 @@ export const chatTools = {
     }),
   },
 
+  getTaggedFiles: {
+    description:
+      'Find all files containing specific tags. Uses indexed metadata for fast, accurate tag-based search. Preferred over getSearchQuery for tag-based lookups.',
+    parameters: z.object({
+      tags: z
+        .array(z.string())
+        .describe('Tags to search for (without # symbol)'),
+      matchAll: z
+        .boolean()
+        .describe(
+          'If true, require ALL tags (AND). If false, match ANY tag (OR)'
+        ),
+      excludeTags: z
+        .array(z.string())
+        .describe('Tags to exclude from results (without # symbol). Use empty array [] if none'),
+      folder: z
+        .string()
+        .describe('Folder path to limit search to. Use empty string "" for entire vault'),
+    }),
+  },
+
   extractHighlights: {
     description:
       'Get content from the current note, selection, or specified files so the assistant can extract key quotes and insights. Use when the user asks for highlights, key takeaways, main points, or memorable quotes. Prefer selection when the user has selected text. When the user refers to "this note", "current file", or @-mentioned files, use the exact file paths from the "Attached file paths" / Current File section in the context for filePath or filePaths.',
@@ -330,19 +351,16 @@ export const chatTools = {
         .describe('What to read: selection (active editor selection), document (single file), or files (multiple files)'),
       filePath: z
         .string()
-        .default('')
         .describe(
           'For scope "document": path to the file. Use empty string "" for current file.'
         ),
       filePaths: z
         .array(z.string())
-        .default([])
         .describe(
           'For scope "files": paths of files to extract content from. Use [] when scope is not "files".'
         ),
       maxChars: z
         .number()
-        .default(30000)
         .describe(
           'Cap content size to avoid token overflow. Use 30000 as default. Applied per file when scope is "files".'
         ),

@@ -82,6 +82,15 @@ export const MarkdownContent: React.FC<MarkdownContentProps> = ({
           );
         }
 
+        // Tighten loose lists: unwrap <p> from inside <li> to remove extra spacing
+        const listItems = tempContainer.querySelectorAll("li");
+        listItems.forEach((li) => {
+          const children = Array.from(li.children);
+          if (children.length === 1 && children[0].tagName === "P") {
+            li.innerHTML = children[0].innerHTML;
+          }
+        });
+
         setRenderedContent(tempContainer.innerHTML);
       } catch (e) {
         logger.error("Error rendering markdown:", e);
@@ -134,6 +143,20 @@ export const MarkdownContent: React.FC<MarkdownContentProps> = ({
         .markdown-content-wrapper .markdown-rendered p {
           margin-left: 0 !important;
           padding-left: 0 !important;
+        }
+        .markdown-content-wrapper .markdown-rendered ul,
+        .markdown-content-wrapper .markdown-rendered ol {
+          margin-top: 0.25em !important;
+          margin-bottom: 0.25em !important;
+          padding-left: 1.5em !important;
+        }
+        .markdown-content-wrapper .markdown-rendered li {
+          margin-top: 0 !important;
+          margin-bottom: 0.1em !important;
+        }
+        .markdown-content-wrapper .markdown-rendered li > p {
+          margin-top: 0 !important;
+          margin-bottom: 0 !important;
         }
       `}</style>
     </div>

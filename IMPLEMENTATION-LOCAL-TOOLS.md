@@ -14,7 +14,7 @@ This document outlines the implementation plan for extending Note Companion's lo
 3. **Client** (`packages/plugin/views/assistant/ai-chat/`) - Executes tools using Obsidian API
 4. **Results** - Sent back to AI via streaming
 
-### Existing Tools (11 total)
+### Existing Tools (28 total)
 - `getSearchQuery` - Semantic search
 - `searchByName` - Name pattern search
 - `getLastModifiedFiles` - Recent files
@@ -27,6 +27,22 @@ This document outlines the implementation plan for extending Note Companion's lo
 - `moveFiles` - Organize files
 - `renameFiles` - Rename files
 - `executeActionsOnFileBasedOnPrompt` - Complex operations
+- `openFile` - Open file in editor
+- `getFileMetadata` - File metadata extraction
+- `updateFrontmatter` - Update YAML frontmatter
+- `addTags` - Add tags to files
+- `getTaggedFiles` - Find files by tags
+- `getBacklinks` - Get backlinks for files
+- `getOutgoingLinks` - Get outgoing links
+- `getHeadings` - Document heading structure
+- `extractHighlights` - Extract key content
+- `createNewFiles` - Create new files
+- `deleteFiles` - Delete files
+- `mergeFiles` - Merge files together
+- `createTemplate` - Create note templates
+- `bulkFindReplace` - Find and replace across files
+- `exportToFormat` - Export files to other formats
+- `searchScreenpipe` - Search ScreenPipe activity
 
 ---
 
@@ -927,15 +943,15 @@ getSearchQuery → getFileMetadata → createLink (between related notes)
 ## Implementation Checklist
 
 ### Phase 1: High-Priority Tools (Week 1)
-- [ ] `getFileMetadata` - Essential for understanding files
-- [ ] `updateFrontmatter` - Common operation
-- [ ] `addTags` - Frequently requested
-- [ ] `getBacklinks` - Graph understanding
-- [ ] `getOutgoingLinks` - Graph understanding
-- [ ] `getHeadings` - Content structure
+- [x] `getFileMetadata` - Essential for understanding files
+- [x] `updateFrontmatter` - Common operation
+- [x] `addTags` - Frequently requested
+- [x] `getBacklinks` - Graph understanding
+- [x] `getOutgoingLinks` - Graph understanding
+- [x] `getHeadings` - Content structure
 
 ### Phase 2: Medium-Priority Tools (Week 2)
-- [ ] `getTaggedFiles` - Tag-based search
+- [x] `getTaggedFiles` - Tag-based search
 - [ ] `findBrokenLinks` - Vault maintenance
 - [ ] `createLink` - Link creation
 - [ ] `findOrphanFiles` - Vault cleanup
@@ -943,7 +959,7 @@ getSearchQuery → getFileMetadata → createLink (between related notes)
 
 ### Phase 3: Advanced Tools (Week 3)
 - [ ] `duplicateFile` - File operations
-- [ ] `mergeFiles` - Content consolidation
+- [x] `mergeFiles` - Content consolidation
 - [ ] `createFileFromTemplate` - Templating
 - [ ] `batchUpdateFiles` - Bulk operations
 

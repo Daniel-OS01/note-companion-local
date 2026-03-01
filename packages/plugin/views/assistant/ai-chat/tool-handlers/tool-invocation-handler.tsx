@@ -20,6 +20,7 @@ import { ModifyTextHandler } from "./modify-text-handler";
 import { MetadataHandler } from "./metadata-handler";
 import { FrontmatterHandler } from "./frontmatter-handler";
 import { TagsHandler } from "./tags-handler";
+import { TaggedFilesHandler } from "./tagged-files-handler";
 import { BacklinksHandler } from "./backlinks-handler";
 import { OutgoingLinksHandler } from "./outgoing-links-handler";
 import { HeadingsHandler } from "./headings-handler";
@@ -32,20 +33,49 @@ import { BulkFindReplaceHandler } from "./bulk-find-replace-handler";
 import { ExportToFormatHandler } from "./export-to-format-handler";
 import { ScreenpipeHandler } from "./screenpipe-handler";
 
+const processedToolCallIds = new Set<string>();
+
 interface ToolInvocationHandlerProps {
   toolInvocation: ToolInvocation;
   addToolResult: (result: { toolCallId: string; result: string }) => void;
   app: App;
+  chatStatus: string;
 }
 
 function ToolInvocationHandler({
   toolInvocation,
   addToolResult,
   app,
+  chatStatus,
 }: ToolInvocationHandlerProps) {
   const toolCallId = toolInvocation.toolCallId;
-  const handleAddResult = (result: string) =>
+  const pendingResultRef = React.useRef<string | null>(null);
+
+  const handleAddResult = (result: string) => {
+    if (processedToolCallIds.has(toolCallId)) {
+      console.log("[ToolInvocationHandler] Skipping duplicate addToolResult for:", toolCallId);
+      return;
+    }
+    if (chatStatus !== "ready") {
+      console.log("[ToolInvocationHandler] Deferring addToolResult until stream finishes for:", toolCallId, "status:", chatStatus);
+      pendingResultRef.current = result;
+      return;
+    }
+    processedToolCallIds.add(toolCallId);
+    console.log("[ToolInvocationHandler] Calling addToolResult for:", toolCallId);
     addToolResult({ toolCallId, result });
+  };
+
+  // Flush pending result when chat status becomes "ready"
+  React.useEffect(() => {
+    if (chatStatus === "ready" && pendingResultRef.current !== null && !processedToolCallIds.has(toolCallId)) {
+      const result = pendingResultRef.current;
+      pendingResultRef.current = null;
+      processedToolCallIds.add(toolCallId);
+      console.log("[ToolInvocationHandler] Flushing deferred addToolResult for:", toolCallId);
+      addToolResult({ toolCallId, result });
+    }
+  }, [chatStatus, toolCallId, addToolResult]);
 
   const getToolTitle = (toolName: string) => {
     const toolTitles = {
@@ -72,6 +102,7 @@ function ToolInvocationHandler({
       getFileMetadata: "File Metadata Extraction",
       updateFrontmatter: "Update Frontmatter",
       addTags: "Add Tags",
+      getTaggedFiles: "Find Tagged Files",
       getBacklinks: "Get Backlinks",
       getOutgoingLinks: "Get Outgoing Links",
       getHeadings: "Get Document Structure",
@@ -214,6 +245,13 @@ function ToolInvocationHandler({
           app={app}
         />
       ),
+      getTaggedFiles: () => (
+        <TaggedFilesHandler
+          toolInvocation={toolInvocation}
+          handleAddResult={handleAddResult}
+          app={app}
+        />
+      ),
       getBacklinks: () => (
         <BacklinksHandler
           toolInvocation={toolInvocation}
@@ -296,6 +334,11 @@ function ToolInvocationHandler({
     const handler = handlers[toolInvocation.toolName];
     if (!handler) {
       console.error("[ToolInvocationHandler] No handler found for tool:", toolInvocation.toolName);
+      if (!("result" in toolInvocation)) {
+        handleAddResult(
+          JSON.stringify({ error: `Unknown tool: ${toolInvocation.toolName}` })
+        );
+      }
       return (
         <div className="text-xs text-[--text-error] p-2">
           Unknown tool: {toolInvocation.toolName}

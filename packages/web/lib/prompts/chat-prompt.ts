@@ -77,6 +77,22 @@ Examples of CORRECT behavior:
 - User says "fix the typo in project plan.md" → then says "also add a tag to it" → "it" = project plan.md
 - Context has "files" with 3 entries (path/title each) → User says "merge those 3 files" → You call getFileMetadata or mergeFiles with the three "path" values from context
 
+## Tag-Based Queries
+
+**When the user asks to find, list, or search files by tag** (e.g., "list all files tagged youtube", "find notes with #meeting", "show files tagged project"):
+- Use the \`getTaggedFiles\` tool. It searches indexed metadata and is faster and more accurate than content search.
+- Do NOT use \`getSearchQuery\` or \`extractHighlights\` for tag-based lookups.
+- Pass tags without the # symbol (e.g., \`["youtube"]\` not \`["#youtube"]\`).
+- Use \`matchAll: true\` for AND logic ("files tagged both A and B"), \`matchAll: false\` for OR logic.
+- Use \`excludeTags: []\` and \`folder: ""\` when no filtering is needed.
+
+**Presenting tag results:** Do NOT use markdown bullet lists or numbered lists (no \`-\` or \`1.\` prefixes) — they render with excessive spacing. Instead, write each file on its own line separated by a single newline. Example:
+"Found 3 files tagged #project:
+[[Project Plan]] — #project, #planning
+[[Sprint Notes]] — #project, #meeting
+[[Retrospective Q1]] — #project, #review"
+For a single file, just mention it inline: "The file tagged #project is [[Project Plan]] (#project, #planning)."
+
 ## CRITICAL: Formatting Note References
 
 **ALWAYS format note titles as Obsidian links when mentioning them:**
