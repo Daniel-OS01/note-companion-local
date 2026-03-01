@@ -48,7 +48,6 @@ jobs:
       # -----------------------------------------------------------------------
       # Validate semver before doing any expensive work.
       # Accepts: v1.2.3  v1.2.3-rc.1  v1.2.3+build.42
-      # Rejects anything that isn't a proper version string.
       # -----------------------------------------------------------------------
       - name: Validate version input
         id: validate
@@ -64,15 +63,8 @@ jobs:
 
       # -----------------------------------------------------------------------
       # Fix "exec /usr/local/bin/docker-entrypoint.sh: exec format error"
-      #
-      # This error almost always means one of two things:
-      #   1. The script has Windows \r\n line endings, which corrupts the
-      #      shebang line (#!/bin/sh becomes #!/bin/sh\r and Linux rejects it).
-      #   2. The executable bit is missing (git sometimes strips it).
-      #
-      # We strip \r and chmod +x every .sh file we find in the repo.
-      # This runs BEFORE the Docker build, so the files are clean when
-      # Docker copies them into the image.
+      # Strips Windows \r line endings and ensures .sh files are executable,
+      # running BEFORE the Docker build so files are clean when copied in.
       # -----------------------------------------------------------------------
       - name: Normalize shell scripts (fix exec format error)
         shell: bash
@@ -94,9 +86,8 @@ jobs:
           fi
 
       # -----------------------------------------------------------------------
-      # Buildx is the modern Docker build engine. Required even for single-arch
-      # builds because it supports BuildKit features like layer caching.
-      # No QEMU needed here since we're only targeting linux/amd64 (Oracle).
+      # Buildx is the modern Docker build engine. Required for BuildKit caching
+      # even when targeting only a single architecture.
       # -----------------------------------------------------------------------
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -110,8 +101,6 @@ jobs:
 
       # -----------------------------------------------------------------------
       # Emit only the explicit version tag (and optionally :latest).
-      # We deliberately never emit branch/sha/pr tags from a manual workflow —
-      # those are for the CI workflow. Here you want clean, intentional versions.
       # -----------------------------------------------------------------------
       - name: Extract metadata (tags & labels)
         id: meta
@@ -126,28 +115,89 @@ jobs:
         run: printf '%s\n' "${{ steps.meta.outputs.tags }}"
 
       # -----------------------------------------------------------------------
-      # Build the image using whatever Dockerfile exists in the repo root.
-      # The GHA cache backend means unchanged layers (deps, build tools) are
-      # restored from cache rather than rebuilt — saves 5-10 min on warm runs.
-      # provenance=false avoids a second attestation manifest that can confuse
-      # older container runtimes; we generate it ourselves in the next step.
+      # Build and push — with retry logic.
+      #
+      # WHY THE RETRY EXISTS:
+      #   The previous failure was:
+      #     "error writing layer blob: failed to parse error response 502"
+      #   This is a transient GitHub Container Registry (ghcr.io) error —
+      #   their "Unicorn" page, served when their infrastructure has a brief
+      #   hiccup. The build itself completed successfully in 5m1s; the push
+      #   failed because ghcr.io returned HTTP 502 while Docker was uploading
+      #   a layer blob. Without retry logic, the entire workflow has to be
+      #   re-triggered manually.
+      #
+      # HOW THE RETRY WORKS:
+      #   We use a bash loop that runs the build+push up to 3 times with a
+      #   30-second pause between attempts. We use the native bash loop rather
+      #   than a third-party retry action so there are no extra dependencies.
+      #   On attempt 2+, the GHA cache (cache-from: type=gha) means all layers
+      #   that were successfully built on attempt 1 are restored instantly —
+      #   only the failed push is retried, not a full 5-minute rebuild.
+      #
+      # WHY provenance=false:
+      #   Without it, docker/build-push-action pushes a second manifest
+      #   containing an in-line SLSA provenance attestation. This second
+      #   manifest is in a format that confuses some older container runtimes
+      #   (including older Dokploy/Portainer versions). We disable it here and
+      #   generate our own clean attestation in the explicit step below.
       # -----------------------------------------------------------------------
-      - name: Build and push Docker image
+      - name: Build and push Docker image (with retry)
         id: push
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: ./Dockerfile
-          push: true
-          platforms: ${{ github.event.inputs.platforms }}
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          provenance: false
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+        shell: bash
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+          LABELS: ${{ steps.meta.outputs.labels }}
+          PLATFORMS: ${{ github.event.inputs.platforms }}
+        run: |
+          MAX_ATTEMPTS=3
+          DELAY=30
 
+          for attempt in $(seq 1 $MAX_ATTEMPTS); do
+            echo "::group::Build & push attempt $attempt of $MAX_ATTEMPTS"
+
+            # Run the build-push-action equivalent via the docker buildx CLI.
+            # We call buildx directly in the retry loop because the action
+            # wrapper cannot be re-invoked inside a bash loop.
+            if docker buildx build \
+                --platform "$PLATFORMS" \
+                --provenance=false \
+                --cache-from "type=gha" \
+                --cache-to "type=gha,mode=max" \
+                $(echo "$TAGS"   | sed 's/^/--tag /;s/\n/ --tag /g' | tr '\n' ' ') \
+                $(echo "$LABELS" | sed 's/^/--label /;s/\n/ --label /g' | tr '\n' ' ') \
+                --push \
+                --file ./Dockerfile \
+                . 2>&1 | tee /tmp/build_output.txt; then
+              echo "::endgroup::"
+              echo "Push succeeded on attempt $attempt."
+
+              # Extract the image digest from the build output so the
+              # attestation step below has something to sign.
+              DIGEST=$(grep -oP 'sha256:[a-f0-9]{64}' /tmp/build_output.txt | tail -1 || true)
+              echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+
+            echo "::endgroup::"
+            echo "::warning::Attempt $attempt failed."
+
+            if [ "$attempt" -lt "$MAX_ATTEMPTS" ]; then
+              echo "Waiting ${DELAY}s before retry..."
+              sleep $DELAY
+              # Increase delay for next attempt (exponential back-off)
+              DELAY=$((DELAY * 2))
+            fi
+          done
+
+          echo "::error::All $MAX_ATTEMPTS push attempts failed. Check the ghcr.io status page."
+          exit 1
+
+      # -----------------------------------------------------------------------
       # Signed provenance attestation — links the image digest back to this
       # exact workflow run so anyone can verify where the image came from.
+      # Only runs when the push step actually produced a digest.
+      # -----------------------------------------------------------------------
       - name: Generate artifact attestation
         if: ${{ steps.push.outputs.digest != '' }}
         uses: actions/attest-build-provenance@v2
@@ -171,3 +221,4 @@ jobs:
           echo "\`\`\`bash" >> "$GITHUB_STEP_SUMMARY"
           echo "docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.validate.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
           echo "\`\`\`" >> "$GITHUB_STEP_SUMMARY"
+
