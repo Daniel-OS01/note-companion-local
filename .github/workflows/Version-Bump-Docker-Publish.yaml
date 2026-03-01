@@ -49,7 +49,7 @@ on:
     inputs:
       version:
         description: 'Explicit version tag to publish (e.g. v1.2.3). Skips auto-bump.'
-        required: false
+        required: true
         type: string
       tag_latest:
         description: 'Also push this image as :latest?'
@@ -192,24 +192,42 @@ jobs:
 
           echo "Version bump committed and pushed."
 
-      # After the bump commit is on master, we use the Klemensas/action-autotag
-      # action to create the git tag. We pass the new version explicitly via the
-      # 'version' input rather than letting it re-read package.json, because at
-      # this point the checkout is stale (we just pushed a new commit) and we
-      # already know the exact version we want to tag.
+      # Create the git tag pointing at the version-bump commit we just pushed.
       #
-      # The tag_prefix: "v" ensures the tag is formatted as v1.2.5 to match
-      # what our Docker workflow expects (semver with v prefix).
-      - name: Create git tag via action-autotag
-        uses: Klemensas/action-autotag@stable
-        with:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          version: ${{ steps.bump.outputs.new_version }}
-          tag_prefix: ""
-          # We suppress the default changelog message in favour of a clean tag.
-          # Remove this line if you want an auto-generated commit changelog as
-          # the tag annotation — it can be useful for GitHub Releases.
-          tag_message: "Release ${{ steps.bump.outputs.new_version }}"
+      # Why not use Klemensas/action-autotag here?
+      # That action has three problems in this pipeline:
+      #   1. GITHUB_TOKEN must be passed as an env var, not a 'with' input —
+      #      passing it as 'with' produces a warning and the token is ignored.
+      #   2. It still uses the deprecated ::set-output:: command internally,
+      #      which GitHub will eventually disable.
+      #   3. When we pass an explicit 'version' input it skips its own tag-
+      #      existence check and crashes with "Reference already exists" if
+      #      the tag was already created by a previous run.
+      #
+      # Native git tag gives us full control: we check existence first, create
+      # an annotated tag (-a -m) so it shows up cleanly on the GitHub Releases
+      # page, and push it with --follow-tags so the tag travels with the commit.
+      - name: Create and push git tag
+        shell: bash
+        run: |
+          VERSION="${{ steps.bump.outputs.new_version }}"
+
+          # Fetch all existing tags from origin so our local check is accurate.
+          git fetch --tags
+
+          # If the tag already exists (e.g. from a re-run), skip creation
+          # rather than crashing. This makes the step idempotent — safe to
+          # retry without manual cleanup.
+          if git rev-parse "$VERSION" >/dev/null 2>&1; then
+            echo "Tag $VERSION already exists — skipping tag creation."
+          else
+            # -a creates an annotated tag (has a tagger, date, and message).
+            # Annotated tags are the correct choice for releases; lightweight
+            # tags (without -a) are meant for temporary local bookmarks.
+            git tag -a "$VERSION" -m "Release $VERSION"
+            git push origin "$VERSION"
+            echo "Created and pushed tag: $VERSION"
+          fi
 
 
   # ===========================================================================
