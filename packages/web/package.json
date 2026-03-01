@@ -1,6 +1,6 @@
 {
   "name": "@file-organizer/web",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "scripts": {
     "dev": "PORT=3010 pnpm next dev",
