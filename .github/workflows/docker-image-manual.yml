@@ -1,0 +1,219 @@
+name: Docker Image Manual Publish
+
+# This workflow is triggered manually via the GitHub Actions UI.
+# It publishes a versioned, multi-architecture Docker image to ghcr.io.
+# It also normalizes entrypoint scripts to fix "exec format error" issues.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version tag in Git Tag format (e.g., v1.2.3). Required to publish.'
+        required: true
+        type: string
+      platforms:
+        description: 'Comma-separated target platforms (default: linux/amd64,linux/arm64)'
+        required: false
+        default: 'linux/amd64,linux/arm64'
+        type: string
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+# Permissions are declared at the top level so they apply to all jobs.
+permissions:
+  contents: read
+  packages: write
+  attestations: write
+  id-token: write
+
+jobs:
+  publish:
+    name: Build and publish Docker image (manual)
+    runs-on: ubuntu-latest
+
+    steps:
+      # -----------------------------------------------------------------------
+      # 1. Checkout
+      # -----------------------------------------------------------------------
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # -----------------------------------------------------------------------
+      # 2. Validate version input — must match vMAJOR.MINOR.PATCH (semver)
+      #    with optional pre-release/build metadata suffix.
+      # -----------------------------------------------------------------------
+      - name: Validate version input
+        id: validate
+        shell: bash
+        run: |
+          VERSION="${{ github.event.inputs.version }}"
+          echo "Validating version: $VERSION"
+          if [[ ! "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([\-+][A-Za-z0-9._-]+)?$ ]]; then
+            echo "ERROR: Version must follow Git tag semver format like v1.2.3 (optional prerelease/build suffix)."
+            exit 1
+          fi
+          # Export for later steps
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Version is valid: $VERSION"
+
+      # -----------------------------------------------------------------------
+      # 3. QEMU + Buildx — required for multi-architecture builds.
+      #    QEMU emulates non-native CPU architectures (e.g., arm64 on amd64
+      #    runners) so Docker Buildx can produce cross-platform images.
+      # -----------------------------------------------------------------------
+      - name: Set up QEMU (for cross-platform builds)
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # -----------------------------------------------------------------------
+      # 4. Normalize entrypoint/shell scripts in the repo.
+      #    The "exec format error" has two common causes:
+      #      a) Windows-style CRLF line endings corrupting the shebang line.
+      #      b) The executable bit not being set on the script.
+      #    We strip \r (carriage return) and chmod +x every .sh file we find.
+      #    NOTE: If the entrypoint is generated *inside* the Dockerfile (e.g.,
+      #    via a COPY or RUN echo), you must also add the following to your
+      #    Dockerfile:
+      #      RUN sed -i 's/\r$//' /usr/local/bin/docker-entrypoint.sh \
+      #       && chmod +x /usr/local/bin/docker-entrypoint.sh
+      # -----------------------------------------------------------------------
+      - name: Normalize entrypoint line endings & set exec bit
+        shell: bash
+        run: |
+          echo "Scanning for shell scripts / entrypoint files..."
+          found=false
+          while IFS= read -r -d $'\0' f; do
+            found=true
+            # Strip Windows carriage returns (\r) that corrupt the shebang
+            sed -i 's/\r$//' "$f" || true
+            chmod +x "$f" || true
+            echo "  Fixed: $f"
+          done < <(find . \
+            -not -path './.git/*' \
+            -type f \
+            \( \
+              -name 'docker-entrypoint.sh' \
+              -o -name 'entrypoint.sh' \
+              -o -name '*.sh' \
+            \) \
+            -print0)
+
+          if [ "$found" = "false" ]; then
+            echo "No shell scripts found in repo. If the entrypoint is created"
+            echo "during the Docker build, ensure your Dockerfile normalizes &"
+            echo "chmods the file (see workflow comment above)."
+          fi
+
+      # -----------------------------------------------------------------------
+      # 5. Log in to the GitHub Container Registry.
+      # -----------------------------------------------------------------------
+      - name: Log in to the Container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # -----------------------------------------------------------------------
+      # 6. Extract metadata — emits ONLY the explicit version tag.
+      #    For manual publishes we intentionally skip branch/sha/latest tags
+      #    so that an accidental manual run doesn't overwrite the 'latest' tag.
+      # -----------------------------------------------------------------------
+      - name: Extract metadata (tags, labels) for Docker
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=${{ steps.validate.outputs.version }}
+
+      # Helpful debug step — lets you confirm what will be tagged before push.
+      - name: Inspect computed tags
+        run: |
+          echo "Tags that will be applied to the image:"
+          echo "${{ steps.meta.outputs.tags }}"
+
+      # -----------------------------------------------------------------------
+      # 7. Guard rail — abort gracefully if no tags were generated.
+      #    (Should not happen after a successful validation step, but is a
+      #    useful safety net against unexpected metadata-action edge cases.)
+      # -----------------------------------------------------------------------
+      - name: Decide whether to proceed with build/push
+        id: decide
+        shell: bash
+        run: |
+          tags="${{ steps.meta.outputs.tags }}"
+          if [ -z "$tags" ]; then
+            echo "No tags generated. Skipping build/push."
+            echo "proceed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "proceed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # -----------------------------------------------------------------------
+      # 8. Build and push the multi-arch image.
+      #    The 'platforms' input defaults to linux/amd64,linux/arm64.
+      #    Both variants are bundled into a single manifest list, so the right
+      #    image is automatically selected on pull regardless of host arch.
+      # -----------------------------------------------------------------------
+      - name: Build and push Docker image (multi-arch)
+        id: push
+        if: ${{ steps.decide.outputs.proceed == 'true' }}
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          platforms: ${{ github.event.inputs.platforms }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # Enable layer caching via the GitHub Actions cache backend.
+          # This dramatically speeds up repeat builds when layers haven't changed.
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # -----------------------------------------------------------------------
+      # 9. Generate a signed build-provenance attestation (SLSA level 2).
+      #    This links the published image digest back to this workflow run,
+      #    allowing consumers to verify the image was built from this repo.
+      # -----------------------------------------------------------------------
+      - name: Generate artifact attestation
+        if: ${{ steps.push.outputs.digest != '' }}
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+
+      # -----------------------------------------------------------------------
+      # 10. Post-run guidance when nothing was pushed.
+      # -----------------------------------------------------------------------
+      - name: Post-run guidance (no tags generated)
+        if: ${{ steps.decide.outputs.proceed == 'false' }}
+        run: |
+          echo "This manual run did not produce any tags."
+          echo "Provide a version like v1.2.3 to publish an image."
+
+      # -----------------------------------------------------------------------
+      # 11. Summary — write a job summary visible in the Actions UI.
+      # -----------------------------------------------------------------------
+      - name: Write job summary
+        if: ${{ steps.push.outputs.digest != '' }}
+        run: |
+          echo "## Docker image published successfully :rocket:" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Field | Value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| **Version** | \`${{ steps.validate.outputs.version }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| **Platforms** | \`${{ github.event.inputs.platforms }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| **Digest** | \`${{ steps.push.outputs.digest }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| **Registry** | \`${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Pull command" >> "$GITHUB_STEP_SUMMARY"
+          echo "\`\`\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.validate.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "\`\`\`" >> "$GITHUB_STEP_SUMMARY"
