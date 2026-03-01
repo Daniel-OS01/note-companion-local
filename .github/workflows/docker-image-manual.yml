@@ -153,28 +153,55 @@ jobs:
           MAX_ATTEMPTS=3
           DELAY=30
 
+          # Build the --tag and --label flag arrays up front, outside the retry
+          # loop. We read the multiline env vars line-by-line into bash arrays
+          # so each value becomes a separate, correctly-quoted array element.
+          # This avoids the sed/tr pipeline that was fragmenting the command and
+          # causing Docker to see zero positional arguments (the '.' build context
+          # was getting lost in the substitution).
+          TAG_ARGS=()
+          while IFS= read -r tag; do
+            # Skip empty lines that can appear at the end of multiline outputs
+            [[ -z "$tag" ]] && continue
+            TAG_ARGS+=(--tag "$tag")
+          done <<< "$TAGS"
+
+          LABEL_ARGS=()
+          while IFS= read -r label; do
+            [[ -z "$label" ]] && continue
+            LABEL_ARGS+=(--label "$label")
+          done <<< "$LABELS"
+
           for attempt in $(seq 1 $MAX_ATTEMPTS); do
             echo "::group::Build & push attempt $attempt of $MAX_ATTEMPTS"
 
-            # Run the build-push-action equivalent via the docker buildx CLI.
-            # We call buildx directly in the retry loop because the action
-            # wrapper cannot be re-invoked inside a bash loop.
+            # The build context '.' is passed as the final positional argument,
+            # clearly separated from all flags. The "${TAG_ARGS[@]}" and
+            # "${LABEL_ARGS[@]}" expansions preserve each element as a separate
+            # shell word, which is what Docker expects.
             if docker buildx build \
-                --platform "$PLATFORMS" \
-                --provenance=false \
-                --cache-from "type=gha" \
-                --cache-to "type=gha,mode=max" \
-                $(echo "$TAGS"   | sed 's/^/--tag /;s/\n/ --tag /g' | tr '\n' ' ') \
-                $(echo "$LABELS" | sed 's/^/--label /;s/\n/ --label /g' | tr '\n' ' ') \
+                --platform   "$PLATFORMS" \
+                --file       ./Dockerfile \
+                --provenance false \
+                --cache-from type=gha \
+                --cache-to   "type=gha,mode=max" \
                 --push \
-                --file ./Dockerfile \
+                "${TAG_ARGS[@]}" \
+                "${LABEL_ARGS[@]}" \
                 . 2>&1 | tee /tmp/build_output.txt; then
+
               echo "::endgroup::"
               echo "Push succeeded on attempt $attempt."
 
               # Extract the image digest from the build output so the
               # attestation step below has something to sign.
-              DIGEST=$(grep -oP 'sha256:[a-f0-9]{64}' /tmp/build_output.txt | tail -1 || true)
+              # The digest is printed by buildx in the form: sha256:abc123...
+              DIGEST=$(grep -oP '(?<=digest: )sha256:[a-f0-9]{64}' /tmp/build_output.txt \
+                       | tail -1 || true)
+              # Fallback: some buildx versions print it differently
+              if [[ -z "$DIGEST" ]]; then
+                DIGEST=$(grep -oP 'sha256:[a-f0-9]{64}' /tmp/build_output.txt | tail -1 || true)
+              fi
               echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
               exit 0
             fi
@@ -183,14 +210,13 @@ jobs:
             echo "::warning::Attempt $attempt failed."
 
             if [ "$attempt" -lt "$MAX_ATTEMPTS" ]; then
-              echo "Waiting ${DELAY}s before retry..."
-              sleep $DELAY
-              # Increase delay for next attempt (exponential back-off)
+              echo "Waiting ${DELAY}s before next attempt (exponential back-off)..."
+              sleep "$DELAY"
               DELAY=$((DELAY * 2))
             fi
           done
 
-          echo "::error::All $MAX_ATTEMPTS push attempts failed. Check the ghcr.io status page."
+          echo "::error::All $MAX_ATTEMPTS push attempts failed. Check https://githubstatus.com"
           exit 1
 
       # -----------------------------------------------------------------------
